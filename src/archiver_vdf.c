@@ -436,7 +436,7 @@ void *VDF_openArchive(PHYSFS_Io *io, const char *name, int forWriting)
     BAIL_IF_MACRO(header.version != 0x50, PHYSFS_ERR_UNSUPPORTED, NULL);
 
     if (memcmp(header.signature, VDF_SIGNATURE_G1, VDF_HEADER_SIGNATURE_LENGTH) != 0
-     || memcmp(header.signature, VDF_SIGNATURE_G2, VDF_HEADER_SIGNATURE_LENGTH) != 0)
+     && memcmp(header.signature, VDF_SIGNATURE_G2, VDF_HEADER_SIGNATURE_LENGTH) != 0)
     {
         BAIL_MACRO(PHYSFS_ERR_UNSUPPORTED, NULL);
     } /* if */
