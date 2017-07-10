@@ -9,10 +9,38 @@
  */
 
 /* !!! FIXME: ERR_PAST_EOF shouldn't trigger for reads. Just return zero. */
-/* !!! FIXME: use snprintf(), not sprintf(). */
 
 #define __PHYSICSFS_INTERNAL__
 #include "physfs_internal.h"
+
+#if defined(_MSC_VER)
+#include <stdarg.h>
+
+/* this code came from https://stackoverflow.com/a/8712996 */
+int __PHYSFS_msvc_vsnprintf(char *outBuf, size_t size, const char *format, va_list ap)
+{
+    int count = -1;
+
+    if (size != 0)
+        count = _vsnprintf_s(outBuf, size, _TRUNCATE, format, ap);
+    if (count == -1)
+        count = _vscprintf(format, ap);
+
+    return count;
+}
+
+int __PHYSFS_msvc_snprintf(char *outBuf, size_t size, const char *format, ...)
+{
+    int count;
+    va_list ap;
+
+    va_start(ap, format);
+    count = __PHYSFS_msvc_vsnprintf(outBuf, size, format, ap);
+    va_end(ap);
+
+    return count;
+}
+#endif
 
 
 typedef struct __PHYSFS_DIRHANDLE__
@@ -1831,7 +1859,7 @@ static void setSaneCfgAddPath(const char *i, const size_t l, const char *dirsep,
     char *str = (char *) __PHYSFS_smallAlloc(allocsize);
     if (str != NULL)
     {
-        sprintf(str, "%s%s%s", d, dirsep, i);
+        snprintf(str, allocsize, "%s%s%s", d, dirsep, i);
         PHYSFS_mount(str, NULL, archivesFirst == 0);
         __PHYSFS_smallFree(str);
     } /* if */
@@ -2272,7 +2300,7 @@ static void enumCallbackFilterSymLinks(void *_data, const char *origdir,
         const DirHandle *dh = data->dirhandle;
         PHYSFS_Stat statbuf;
 
-        sprintf(path, "%s%s%s", trimmedDir, *trimmedDir ? "/" : "", fname);
+        snprintf(path, slen, "%s%s%s", trimmedDir, *trimmedDir ? "/" : "", fname);
         if (dh->funcs->stat(dh->opaque, path, &statbuf))
         {
             /* Pass it on to the application if it's not a symlink. */
