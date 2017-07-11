@@ -29,6 +29,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
     set(SOLARIS TRUE)
 endif()
 
+# Don't treat MingW as Unix; use it as a strictly-Windows compiler.
+if(MINGW)
+    set(UNIX FALSE)
+endif()
+
 include(CheckIncludeFile)
 include(CheckLibraryExists)
 include(CheckCSourceCompiles)
@@ -273,7 +278,13 @@ endif()
 option(PHYSFS_BUILD_STATIC "Build static library" TRUE)
 if(PHYSFS_BUILD_STATIC)
     add_library(physfs-static STATIC ${PHYSFS_SRCS})
-    set_target_properties(physfs-static PROPERTIES OUTPUT_NAME "physfs")
+    # Don't rename this on Windows, since DLLs will also produce an import
+    #  library named "physfs.lib" which would conflict; Unix tend to like the
+    #  same library name with a different extension for static libs, but
+    #  Windows can just have a separate name.
+    if(NOT WINDOWS)
+        set_target_properties(physfs-static PROPERTIES OUTPUT_NAME "physfs")
+    endif()
     set(PHYSFS_LIB_TARGET physfs-static)
     set(PHYSFS_INSTALL_TARGETS ${PHYSFS_INSTALL_TARGETS} ";physfs-static")
 endif()
@@ -293,7 +304,7 @@ if(NOT PHYSFS_BUILD_SHARED AND NOT PHYSFS_BUILD_STATIC)
 endif()
 
 # CMake FAQ says I need this...
-if(PHYSFS_BUILD_SHARED AND PHYSFS_BUILD_STATIC)
+if(PHYSFS_BUILD_SHARED AND PHYSFS_BUILD_STATIC AND NOT WINDOWS)
     set_target_properties(physfs PROPERTIES CLEAN_DIRECT_OUTPUT 1)
     set_target_properties(physfs-static PROPERTIES CLEAN_DIRECT_OUTPUT 1)
 endif()
@@ -393,6 +404,8 @@ message_bool_option("HOG support" PHYSFS_ARCHIVE_HOG)
 message_bool_option("MVL support" PHYSFS_ARCHIVE_MVL)
 message_bool_option("QPAK support" PHYSFS_ARCHIVE_QPAK)
 message_bool_option("SLB support" PHYSFS_ARCHIVE_SLB)
+message_bool_option("VDF support" PHYSFS_ARCHIVE_VDF)
+message_bool_option("ISO9660 support" PHYSFS_ARCHIVE_ISO9660)
 message_bool_option("CD-ROM drive support" PHYSFS_HAVE_CDROM_SUPPORT)
 message_bool_option("Thread safety" PHYSFS_HAVE_THREAD_SUPPORT)
 message_bool_option("Build static library" PHYSFS_BUILD_STATIC)
