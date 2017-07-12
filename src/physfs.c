@@ -1123,7 +1123,6 @@ static int doRegisterArchiver(const PHYSFS_Archiver *_archiver);
 static int initStaticArchivers(void)
 {
     #define REGISTER_STATIC_ARCHIVER(arc) { \
-        extern const PHYSFS_Archiver __PHYSFS_Archiver_##arc; \
         if (!doRegisterArchiver(&__PHYSFS_Archiver_##arc)) { \
             return 0; \
         } \
@@ -3002,14 +3001,11 @@ static void mallocAllocatorFree(void *ptr)
 static void setDefaultAllocator(void)
 {
     assert(!externalAllocator);
-    if (!__PHYSFS_platformSetDefaultAllocator(&allocator))
-    {
-        allocator.Init = NULL;
-        allocator.Deinit = NULL;
-        allocator.Malloc = mallocAllocatorMalloc;
-        allocator.Realloc = mallocAllocatorRealloc;
-        allocator.Free = mallocAllocatorFree;
-    } /* if */
+    allocator.Init = NULL;
+    allocator.Deinit = NULL;
+    allocator.Malloc = mallocAllocatorMalloc;
+    allocator.Realloc = mallocAllocatorRealloc;
+    allocator.Free = mallocAllocatorFree;
 } /* setDefaultAllocator */
 
 /* end of physfs.c ... */
