@@ -354,7 +354,7 @@ static PHYSFS_sint64 ZIP_read(PHYSFS_Io *_io, void *buf, PHYSFS_uint64 len)
 
                     finfo->compressed_position += (PHYSFS_uint32) br;
                     finfo->stream.next_in = finfo->buffer;
-                    finfo->stream.avail_in = (PHYSFS_uint32) br;
+                    finfo->stream.avail_in = (unsigned int) br;
                 } /* if */
             } /* if */
 
@@ -815,9 +815,9 @@ static int zip_resolve_symlink(PHYSFS_Io *io, ZIPinfo *info, ZIPentry *entry)
             {
                 initializeZStream(&stream);
                 stream.next_in = compressed;
-                stream.avail_in = complen;
+                stream.avail_in = (unsigned int) complen;
                 stream.next_out = (unsigned char *) path;
-                stream.avail_out = size;
+                stream.avail_out = (unsigned int) size;
                 if (zlib_err(inflateInit2(&stream, -MAX_WBITS)) == Z_OK)
                 {
                     rc = zlib_err(inflate(&stream, Z_FINISH));
@@ -1537,7 +1537,7 @@ static int zip_parse_end_of_central_dir(ZIPinfo *info,
     /* offset of central directory */
     BAIL_IF_ERRPASS(!readui32(io, &offset32), 0);
     *dir_ofs = (PHYSFS_uint64) offset32;
-    BAIL_IF(pos < (*dir_ofs + ui32), PHYSFS_ERR_CORRUPT, 0);
+    BAIL_IF(((PHYSFS_uint64) pos) < (*dir_ofs + ui32), PHYSFS_ERR_CORRUPT, 0);
 
     /*
      * For self-extracting archives, etc, there's crapola in the file
@@ -1681,7 +1681,7 @@ static PHYSFS_Io *ZIP_openRead(void *opaque, const char *filename)
             const PHYSFS_uint64 len = (PHYSFS_uint64) (ptr - filename);
             char *str = (char *) __PHYSFS_smallAlloc(len + 1);
             BAIL_IF(!str, PHYSFS_ERR_OUT_OF_MEMORY, NULL);
-            memcpy(str, filename, len);
+            memcpy(str, filename, (size_t) len);
             str[len] = '\0';
             entry = zip_find_entry(info, str);
             __PHYSFS_smallFree(str);
