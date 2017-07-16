@@ -155,6 +155,9 @@ void __PHYSFS_smallFree(void *ptr);
 #ifndef PHYSFS_SUPPORTS_WAD
 #define PHYSFS_SUPPORTS_WAD 1
 #endif
+#ifndef PHYSFS_SUPPORTS_QPAK
+#define PHYSFS_SUPPORTS_QPAK 1
+#endif
 #ifndef PHYSFS_SUPPORTS_SLB
 #define PHYSFS_SUPPORTS_SLB 1
 #endif
@@ -339,24 +342,51 @@ int __PHYSFS_readAll(PHYSFS_Io *io, void *buf, const PHYSFS_uint64 len);
 
 /* These are shared between some archivers. */
 
-typedef struct
-{
-    char name[64];
-    PHYSFS_uint32 startPos;
-    PHYSFS_uint32 size;
-} UNPKentry;
-
 void UNPK_closeArchive(void *opaque);
-void *UNPK_openArchive(PHYSFS_Io *io,UNPKentry *e,const PHYSFS_uint32 n);
-void UNPK_enumerateFiles(void *opaque, const char *dname,
-                         PHYSFS_EnumFilesCallback cb,
-                         const char *origdir, void *callbackdata);
+void *UNPK_openArchive(PHYSFS_Io *io, const PHYSFS_uint64 entry_count);
+void *UNPK_addEntry(void *opaque, char *name, const int isdir,
+                    const PHYSFS_uint64 pos, const PHYSFS_uint64 len);
 PHYSFS_Io *UNPK_openRead(void *opaque, const char *name);
 PHYSFS_Io *UNPK_openWrite(void *opaque, const char *name);
 PHYSFS_Io *UNPK_openAppend(void *opaque, const char *name);
 int UNPK_remove(void *opaque, const char *name);
 int UNPK_mkdir(void *opaque, const char *name);
 int UNPK_stat(void *opaque, const char *fn, PHYSFS_Stat *st);
+#define UNPK_enumerateFiles __PHYSFS_DirTreeEnumerateFiles
+
+
+
+/* Optional API many archivers use this to manage their directory tree. */
+/* !!! FIXME: document this better. */
+
+typedef struct __PHYSFS_DirTreeEntry
+{
+    char *name;                              /* Full path in archive.        */
+    struct __PHYSFS_DirTreeEntry *hashnext;  /* next item in hash bucket.    */
+    struct __PHYSFS_DirTreeEntry *children;  /* linked list of kids, if dir. */
+    struct __PHYSFS_DirTreeEntry *sibling;   /* next item in same dir.       */
+    int isdir;
+} __PHYSFS_DirTreeEntry;
+
+typedef struct __PHYSFS_DirTree
+{
+    __PHYSFS_DirTreeEntry *root;    /* root of directory tree.             */
+    __PHYSFS_DirTreeEntry **hash;  /* all entries hashed for fast lookup. */
+    size_t hashBuckets;            /* number of buckets in hash.          */
+    size_t entrylen;    /* size in bytes of entries (including subclass). */
+} __PHYSFS_DirTree;
+
+
+int __PHYSFS_DirTreeInit(__PHYSFS_DirTree *dt,
+                         const PHYSFS_uint64 entry_count,
+                         const size_t entrylen);
+void *__PHYSFS_DirTreeAdd(__PHYSFS_DirTree *dt, char *name, const int isdir);
+void *__PHYSFS_DirTreeFind(__PHYSFS_DirTree *dt, const char *path);
+void __PHYSFS_DirTreeEnumerateFiles(void *opaque, const char *dname,
+                                    PHYSFS_EnumFilesCallback cb,
+                                    const char *origdir, void *callbackdata);
+void __PHYSFS_DirTreeDeinit(__PHYSFS_DirTree *dt);
+
 
 
 /*--------------------------------------------------------------------------*/
