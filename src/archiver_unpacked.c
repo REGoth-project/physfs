@@ -264,19 +264,19 @@ void *UNPK_addEntry(void *opaque, char *name, const int isdir,
     entry = (UNPKentry *) __PHYSFS_DirTreeAdd(&info->tree, name, isdir);
     BAIL_IF_ERRPASS(!entry, NULL);
 
-    entry->startPos = pos;
-    entry->size = len;
+    entry->startPos = isdir ? 0 : pos;
+    entry->size = isdir ? 0 : len;
 
     return entry;
 } /* UNPK_addEntry */
 
 
-void *UNPK_openArchive(PHYSFS_Io *io, const PHYSFS_uint64 entry_count)
+void *UNPK_openArchive(PHYSFS_Io *io)
 {
     UNPKinfo *info = (UNPKinfo *) allocator.Malloc(sizeof (UNPKinfo));
     BAIL_IF(!info, PHYSFS_ERR_OUT_OF_MEMORY, NULL);
 
-    if (!__PHYSFS_DirTreeInit(&info->tree, entry_count, sizeof (UNPKentry)))
+    if (!__PHYSFS_DirTreeInit(&info->tree, sizeof (UNPKentry)))
     {
         allocator.Free(info);
         return NULL;
