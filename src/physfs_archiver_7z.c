@@ -387,7 +387,7 @@ static int SZIP_stat(void *opaque, const char *path, PHYSFS_Stat *stat)
 } /* SZIP_stat */
 
 
-const PHYSFS_Archiver __PHYSFS_Archiver_SZIP =
+const PHYSFS_Archiver __PHYSFS_Archiver_7Z =
 {
     CURRENT_PHYSFS_ARCHIVER_API_VERSION,
     {
@@ -410,5 +410,5 @@ const PHYSFS_Archiver __PHYSFS_Archiver_SZIP =
 
 #endif  /* defined PHYSFS_SUPPORTS_7Z */
 
-/* end of archiver_7z.c ... */
+/* end of physfs_archiver_7z.c ... */
 
