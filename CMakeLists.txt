@@ -42,10 +42,18 @@ endif()
 if(HAIKU)
     # We add this explicitly, since we don't want CMake to think this
     #  is a C++ project unless we're on Haiku.
-    set(PHYSFS_HAIKU_SRCS src/physfs_platform_haiku.cpp)
+    set(PHYSFS_CPP_SRCS src/physfs_platform_haiku.cpp)
     find_library(BE_LIBRARY be)
     find_library(ROOT_LIBRARY root)
     set(OPTIONAL_LIBRARY_LIBS ${OPTIONAL_LIBRARY_LIBS} ${BE_LIBRARY} ${ROOT_LIBRARY})
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "WindowsPhone" OR CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+    set(WINRT TRUE)
+endif()
+
+if(WINRT)
+    set(PHYSFS_CPP_SRCS src/physfs_platform_winrt.cpp)
 endif()
 
 if(UNIX AND NOT WINDOWS AND NOT APPLE)  # (MingW and such might be UNIX _and_ WINDOWS!)
@@ -80,7 +88,7 @@ set(PHYSFS_SRCS
     src/physfs_archiver_slb.c
     src/physfs_archiver_iso9660.c
     src/physfs_archiver_vdf.c
-    ${PHYSFS_HAIKU_SRCS}
+    ${PHYSFS_CPP_SRCS}
 )
 
 
@@ -149,6 +157,12 @@ if(PHYSFS_BUILD_STATIC)
     if(NOT WINDOWS)
         set_target_properties(physfs-static PROPERTIES OUTPUT_NAME "physfs")
     endif()
+    if(WINRT)
+        # Ignore LNK4264 warnings; we don't author any WinRT components, just consume them, so we're okay in a static library.
+		set_target_properties(physfs-static PROPERTIES VS_WINRT_COMPONENT True)
+        set_target_properties(physfs-static PROPERTIES STATIC_LIBRARY_FLAGS "/ignore:4264")
+    endif()
+
     set(PHYSFS_LIB_TARGET physfs-static)
     set(PHYSFS_INSTALL_TARGETS ${PHYSFS_INSTALL_TARGETS} ";physfs-static")
 endif()
@@ -158,6 +172,9 @@ if(PHYSFS_BUILD_SHARED)
     add_library(physfs SHARED ${PHYSFS_SRCS})
     set_target_properties(physfs PROPERTIES VERSION ${PHYSFS_VERSION})
     set_target_properties(physfs PROPERTIES SOVERSION ${PHYSFS_SOVERSION})
+    if(WINRT)
+		set_target_properties(physfs PROPERTIES VS_WINRT_COMPONENT True)
+    endif()
     target_link_libraries(physfs ${OPTIONAL_LIBRARY_LIBS} ${OTHER_LDFLAGS})
     set(PHYSFS_LIB_TARGET physfs)
     set(PHYSFS_INSTALL_TARGETS ${PHYSFS_INSTALL_TARGETS} ";physfs")

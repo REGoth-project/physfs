@@ -322,7 +322,7 @@ static PHYSFS_sint64 ZIP_read(PHYSFS_Io *_io, void *buf, PHYSFS_uint64 len)
 
         while (retval < maxread)
         {
-            PHYSFS_uint32 before = finfo->stream.total_out;
+            const PHYSFS_uint32 before = (PHYSFS_uint32) finfo->stream.total_out;
             int rc;
 
             if (finfo->stream.avail_in == 0)
@@ -1497,7 +1497,7 @@ static PHYSFS_Io *zip_get_io(PHYSFS_Io *io, ZIPinfo *inf, ZIPentry *entry)
     PHYSFS_Io *retval = io->duplicate(io);
     BAIL_IF_ERRPASS(!retval, NULL);
 
-    /* !!! FIXME: if you open a dir here, it should bail ERR_NOT_A_FILE */
+    assert(!entry->tree.isdir); /* should have been checked before calling. */
 
     /* (inf) can be NULL if we already resolved. */
     success = (inf == NULL) || zip_resolve(retval, inf, entry);
