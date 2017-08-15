@@ -118,36 +118,35 @@ char *__PHYSFS_platformCalcUserDir(void)
 } /* __PHYSFS_platformCalcUserDir */
 
 
-void __PHYSFS_platformEnumerateFiles(const char *dirname,
-                                     PHYSFS_EnumFilesCallback callback,
-                                     const char *origdir,
-                                     void *callbackdata)
+int __PHYSFS_platformEnumerate(const char *dirname,
+                               PHYSFS_EnumerateCallback callback,
+                               const char *origdir, void *callbackdata)
 {
     DIR *dir;
     struct dirent *ent;
-    char *buf = NULL;
+    int retval = 1;
 
-    errno = 0;
     dir = opendir(dirname);
-    if (dir == NULL)
-    {
-        allocator.Free(buf);
-        return;
-    } /* if */
+    BAIL_IF(dir == NULL, errcodeFromErrno(), -1);
 
-    while ((ent = readdir(dir)) != NULL)
+    while ((retval == 1) && ((ent = readdir(dir)) != NULL))
     {
-        if (strcmp(ent->d_name, ".") == 0)
-            continue;
-        else if (strcmp(ent->d_name, "..") == 0)
-            continue;
+        const char *name = ent->d_name;
+        if (name[0] == '.')  /* ignore "." and ".." */
+        {
+            if ((name[1] == '\0') || ((name[1] == '.') && (name[2] == '\0')))
+                continue;
+        } /* if */
 
-        callback(callbackdata, origdir, ent->d_name);
+        retval = callback(callbackdata, origdir, name);
+        if (retval == -1)
+            PHYSFS_setErrorCode(PHYSFS_ERR_APP_CALLBACK);
     } /* while */
 
-    allocator.Free(buf);
     closedir(dir);
-} /* __PHYSFS_platformEnumerateFiles */
+
+    return retval;
+} /* __PHYSFS_platformEnumerate */
 
 
 int __PHYSFS_platformMkDir(const char *path)
@@ -248,7 +247,7 @@ PHYSFS_sint64 __PHYSFS_platformWrite(void *opaque, const void *buffer,
 int __PHYSFS_platformSeek(void *opaque, PHYSFS_uint64 pos)
 {
     const int fd = *((int *) opaque);
-    const int rc = lseek(fd, (off_t) pos, SEEK_SET);
+    const off_t rc = lseek(fd, (off_t) pos, SEEK_SET);
     BAIL_IF(rc == -1, errcodeFromErrno(), 0);
     return 1;
 } /* __PHYSFS_platformSeek */
@@ -331,8 +330,7 @@ int __PHYSFS_platformStat(const char *filename, PHYSFS_Stat *st)
     st->createtime = statbuf.st_ctime;
     st->accesstime = statbuf.st_atime;
 
-    /* !!! FIXME: maybe we should just report full permissions? */
-    st->readonly = access(filename, W_OK);
+    st->readonly = (access(filename, W_OK) == -1);
     return 1;
 } /* __PHYSFS_platformStat */
 

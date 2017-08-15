@@ -61,7 +61,8 @@ static int hogLoadEntries(PHYSFS_Io *io, void *arc)
 } /* hogLoadEntries */
 
 
-static void *HOG_openArchive(PHYSFS_Io *io, const char *name, int forWriting)
+static void *HOG_openArchive(PHYSFS_Io *io, const char *name,
+                             int forWriting, int *claimed)
 {
     PHYSFS_uint8 buf[3];
     void *unpkarc = NULL;
@@ -70,6 +71,8 @@ static void *HOG_openArchive(PHYSFS_Io *io, const char *name, int forWriting)
     BAIL_IF(forWriting, PHYSFS_ERR_READ_ONLY, NULL);
     BAIL_IF_ERRPASS(!__PHYSFS_readAll(io, buf, 3), NULL);
     BAIL_IF(memcmp(buf, "DHF", 3) != 0, PHYSFS_ERR_UNSUPPORTED, NULL);
+
+    *claimed = 1;
 
     unpkarc = UNPK_openArchive(io);
     BAIL_IF_ERRPASS(!unpkarc, NULL);
@@ -95,7 +98,7 @@ const PHYSFS_Archiver __PHYSFS_Archiver_HOG =
         0,  /* supportsSymlinks */
     },
     HOG_openArchive,
-    UNPK_enumerateFiles,
+    UNPK_enumerate,
     UNPK_openRead,
     UNPK_openWrite,
     UNPK_openAppend,

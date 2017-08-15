@@ -30,6 +30,9 @@
 
 #include <assert.h>
 
+#define __PHYSFS_COMPILE_TIME_ASSERT(name, x) \
+       typedef int __PHYSFS_compile_time_assert_##name[(x) * 2 - 1]
+
 /* !!! FIXME: remove this when revamping stack allocation code... */
 #if defined(_MSC_VER) || defined(__MINGW32__) || defined(__WATCOMC__)
 #include <malloc.h>
@@ -104,6 +107,22 @@ const void *__PHYSFS_winrtCalcBaseDir(void);
 const void *__PHYSFS_winrtCalcPrefDir(void);
 #endif
 
+/* atomic operations. */
+#if defined(_MSC_VER) && (_MSC_VER >= 1500)
+#include <intrin.h>
+__PHYSFS_COMPILE_TIME_ASSERT(LongEqualsInt, sizeof (int) == sizeof (long));
+#define __PHYSFS_ATOMIC_INCR(ptrval) _InterlockedIncrement((long*)(ptrval))
+#define __PHYSFS_ATOMIC_DECR(ptrval) _InterlockedDecrement((long*)(ptrval))
+#elif defined(__clang__) || (defined(__GNUC__) && (((__GNUC__ * 10000) + (__GNUC_MINOR__ * 100)) >= 40100))
+#define __PHYSFS_ATOMIC_INCR(ptrval) __sync_fetch_and_add(ptrval, 1)
+#define __PHYSFS_ATOMIC_DECR(ptrval) __sync_fetch_and_add(ptrval, -1)
+#else
+#define PHYSFS_NEED_ATOMIC_OP_FALLBACK 1
+int __PHYSFS_ATOMIC_INCR(int *ptrval);
+int __PHYSFS_ATOMIC_DECR(int *ptrval);
+#endif
+
+
 /*
  * Interface for small allocations. If you need a little scratch space for
  *  a throwaway buffer or string, use this. It will make small allocations
@@ -126,7 +145,7 @@ const void *__PHYSFS_winrtCalcPrefDir(void);
  * NEVER forget to check for NULL...allocation can fail here, of course!
  */
 #define __PHYSFS_SMALLALLOCTHRESHOLD 256
-void *__PHYSFS_initSmallAlloc(void *ptr, PHYSFS_uint64 len);
+void *__PHYSFS_initSmallAlloc(void *ptr, const size_t len);
 
 #define __PHYSFS_smallAlloc(bytes) ( \
     __PHYSFS_initSmallAlloc( \
@@ -172,6 +191,11 @@ void __PHYSFS_smallFree(void *ptr);
 #endif
 #ifndef PHYSFS_SUPPORTS_VDF
 #define PHYSFS_SUPPORTS_VDF 1
+#endif
+
+#if PHYSFS_SUPPORTS_7Z
+/* 7zip support needs a global init function called at startup (no deinit). */
+extern void SZIP_global_init(void);
 #endif
 
 /* The latest supported PHYSFS_Io::version value. */
@@ -271,39 +295,6 @@ void __PHYSFS_sort(void *entries, size_t max,
     ((s) < (__PHYSFS_UI64(0xFFFFFFFFFFFFFFFF) >> (64-(sizeof(size_t)*8)))) \
 )
 
-
-/*
- * This is a strcasecmp() or stricmp() replacement that expects both strings
- *  to be in UTF-8 encoding. It will do "case folding" to decide if the
- *  Unicode codepoints in the strings match.
- *
- * It will report which string is "greater than" the other, but be aware that
- *  this doesn't necessarily mean anything: 'a' may be "less than" 'b', but
- *  a random Kanji codepoint has no meaningful alphabetically relationship to
- *  a Greek Lambda, but being able to assign a reliable "value" makes sorting
- *  algorithms possible, if not entirely sane. Most cases should treat the
- *  return value as "equal" or "not equal".
- */
-int __PHYSFS_utf8stricmp(const char *s1, const char *s2);
-
-/*
- * This works like __PHYSFS_utf8stricmp(), but takes a character (NOT BYTE
- *  COUNT) argument, like strcasencmp().
- */
-int __PHYSFS_utf8strnicmp(const char *s1, const char *s2, PHYSFS_uint32 l);
-
-/*
- * stricmp() that guarantees to only work with low ASCII. The C runtime
- *  stricmp() might try to apply a locale/codepage/etc, which we don't want.
- */
-int __PHYSFS_stricmpASCII(const char *s1, const char *s2);
-
-/*
- * strnicmp() that guarantees to only work with low ASCII. The C runtime
- *  strnicmp() might try to apply a locale/codepage/etc, which we don't want.
- */
-int __PHYSFS_strnicmpASCII(const char *s1, const char *s2, PHYSFS_uint32 l);
-
 /*
  * Like strdup(), but uses the current PhysicsFS allocator.
  */
@@ -343,7 +334,7 @@ PHYSFS_Io *__PHYSFS_createMemoryIo(const void *buf, PHYSFS_uint64 len,
  * Read (len) bytes from (io) into (buf). Returns non-zero on success,
  *  zero on i/o error. Literally: "return (io->read(io, buf, len) == len);"
  */
-int __PHYSFS_readAll(PHYSFS_Io *io, void *buf, const PHYSFS_uint64 len);
+int __PHYSFS_readAll(PHYSFS_Io *io, void *buf, const size_t len);
 
 
 /* These are shared between some archivers. */
@@ -360,7 +351,7 @@ PHYSFS_Io *UNPK_openAppend(void *opaque, const char *name);
 int UNPK_remove(void *opaque, const char *name);
 int UNPK_mkdir(void *opaque, const char *name);
 int UNPK_stat(void *opaque, const char *fn, PHYSFS_Stat *st);
-#define UNPK_enumerateFiles __PHYSFS_DirTreeEnumerateFiles
+#define UNPK_enumerate __PHYSFS_DirTreeEnumerate
 
 
 
@@ -388,9 +379,9 @@ typedef struct __PHYSFS_DirTree
 int __PHYSFS_DirTreeInit(__PHYSFS_DirTree *dt, const size_t entrylen);
 void *__PHYSFS_DirTreeAdd(__PHYSFS_DirTree *dt, char *name, const int isdir);
 void *__PHYSFS_DirTreeFind(__PHYSFS_DirTree *dt, const char *path);
-void __PHYSFS_DirTreeEnumerateFiles(void *opaque, const char *dname,
-                                    PHYSFS_EnumFilesCallback cb,
-                                    const char *origdir, void *callbackdata);
+int __PHYSFS_DirTreeEnumerate(void *opaque, const char *dname,
+                              PHYSFS_EnumerateCallback cb,
+                              const char *origdir, void *callbackdata);
 void __PHYSFS_DirTreeDeinit(__PHYSFS_DirTree *dt);
 
 
@@ -414,6 +405,7 @@ void __PHYSFS_DirTreeDeinit(__PHYSFS_DirTree *dt);
 #if defined(PHYSFS_PLATFORM_WINDOWS) || defined(PHYSFS_PLATFORM_OS2)
 #define __PHYSFS_platformDirSeparator '\\'
 #else
+#define __PHYSFS_STANDARD_DIRSEP 1
 #define __PHYSFS_platformDirSeparator '/'
 #endif
 
@@ -431,11 +423,8 @@ int __PHYSFS_platformInit(void);
  * Deinitialize the platform. This is called when PHYSFS_deinit() is called
  *  from the application. You can use this to clean up anything you've
  *  allocated in your platform driver.
- *
- * Return zero if there was a catastrophic failure (which prevents you from
- *  functioning at all), and non-zero otherwise.
  */
-int __PHYSFS_platformDeinit(void);
+void __PHYSFS_platformDeinit(void);
 
 
 /*
@@ -556,7 +545,13 @@ PHYSFS_sint64 __PHYSFS_platformFileLength(void *handle);
 
 
 /*
- * !!! FIXME: comment me.
+ * Read filesystem metadata for a specific path.
+ *
+ * This needs to fill in all the fields of (stat). For fields that might not
+ *  mean anything on a platform (access time, perhaps), choose a reasonable
+ *  default.
+ *
+ *  Return zero on failure, non-zero on success.
  */
 int __PHYSFS_platformStat(const char *fn, PHYSFS_Stat *stat);
 
@@ -632,16 +627,15 @@ void *__PHYSFS_platformGetThreadID(void);
 
 /*
  * Enumerate a directory of files. This follows the rules for the
- *  PHYSFS_Archiver::enumerateFiles() method, except that the
- *  (dirName) that is passed to this function is converted to
- *  platform-DEPENDENT notation by the caller. The PHYSFS_Archiver version
- *  uses platform-independent notation. Note that ".", "..", and other
- *  meta-entries should always be ignored.
+ *  PHYSFS_Archiver::enumerate() method, except that the (dirName) that is
+ *  passed to this function is converted to platform-DEPENDENT notation by
+ *  the caller. The PHYSFS_Archiver version uses platform-independent
+ *  notation. Note that ".", "..", and other meta-entries should always
+ *  be ignored.
  */
-void __PHYSFS_platformEnumerateFiles(const char *dirname,
-                                     PHYSFS_EnumFilesCallback callback,
-                                     const char *origdir,
-                                     void *callbackdata);
+int __PHYSFS_platformEnumerate(const char *dirname,
+                               PHYSFS_EnumerateCallback callback,
+                               const char *origdir, void *callbackdata);
 
 /*
  * Make a directory in the actual filesystem. (path) is specified in

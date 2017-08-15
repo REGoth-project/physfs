@@ -70,6 +70,12 @@ static int vdfLoadEntries(PHYSFS_Io *io, const PHYSFS_uint32 count,
         name[VDF_ENTRY_NAME_LENGTH] = '\0';  /* always null-terminated. */
         for (namei = VDF_ENTRY_NAME_LENGTH - 1; namei >= 0; namei--)
         {
+            /* We assume the filenames are low-ASCII; consider the archive
+               corrupt if we see something above 127, since we don't know the
+               encoding. (We can change this later if we find out these exist
+               and are intended to be, say, latin-1 or UTF-8 encoding). */
+            BAIL_IF(((PHYSFS_uint8) name[namei]) > 127, PHYSFS_ERR_CORRUPT, 0);
+
             if (name[namei] == ' ')
                 name[namei] = '\0';
             else
@@ -78,9 +84,6 @@ static int vdfLoadEntries(PHYSFS_Io *io, const PHYSFS_uint32 count,
 
         BAIL_IF(!name[0], PHYSFS_ERR_CORRUPT, 0);
 
-        /* !!! FIXME: we assume the filenames are low-ASCII; if they use
-           any high-ASCII chars, they will be invalid UTF-8. */
-
         BAIL_IF_ERRPASS(!UNPK_addEntry(arc, name, 0, ts, ts, jump, size), 0);
     } /* for */
 
@@ -88,7 +91,8 @@ static int vdfLoadEntries(PHYSFS_Io *io, const PHYSFS_uint32 count,
 } /* vdfLoadEntries */
 
 
-static void *VDF_openArchive(PHYSFS_Io *io, const char *name, int forWriting)
+static void *VDF_openArchive(PHYSFS_Io *io, const char *name,
+                             int forWriting, int *claimed)
 {
     PHYSFS_uint8 ignore[16];
     PHYSFS_uint8 sig[VDF_SIGNATURE_LENGTH];
@@ -103,6 +107,15 @@ static void *VDF_openArchive(PHYSFS_Io *io, const char *name, int forWriting)
     BAIL_IF_ERRPASS(!io->seek(io, VDF_COMMENT_LENGTH), NULL);
 
     BAIL_IF_ERRPASS(!__PHYSFS_readAll(io, sig, sizeof (sig)), NULL);
+
+    if ((memcmp(sig, VDF_SIGNATURE_G1, VDF_SIGNATURE_LENGTH) != 0) &&
+        (memcmp(sig, VDF_SIGNATURE_G2, VDF_SIGNATURE_LENGTH) != 0))
+    {
+        BAIL(PHYSFS_ERR_UNSUPPORTED, NULL);
+    } /* if */
+
+    *claimed = 1;
+
     BAIL_IF_ERRPASS(!readui32(io, &count), NULL);
     BAIL_IF_ERRPASS(!__PHYSFS_readAll(io, ignore, 4), NULL);  /* numFiles */
     BAIL_IF_ERRPASS(!readui32(io, &timestamp), NULL);
@@ -111,12 +124,6 @@ static void *VDF_openArchive(PHYSFS_Io *io, const char *name, int forWriting)
     BAIL_IF_ERRPASS(!readui32(io, &version), NULL);
 
     BAIL_IF(version != 0x50, PHYSFS_ERR_UNSUPPORTED, NULL);
-
-    if ((memcmp(sig, VDF_SIGNATURE_G1, VDF_SIGNATURE_LENGTH) != 0) &&
-        (memcmp(sig, VDF_SIGNATURE_G2, VDF_SIGNATURE_LENGTH) != 0))
-    {
-        BAIL(PHYSFS_ERR_UNSUPPORTED, NULL);
-    } /* if */
 
     BAIL_IF_ERRPASS(!io->seek(io, rootCatOffset), NULL);
 
@@ -144,7 +151,7 @@ const PHYSFS_Archiver __PHYSFS_Archiver_VDF =
         0,  /* supportsSymlinks */
     },
     VDF_openArchive,
-    UNPK_enumerateFiles,
+    UNPK_enumerate,
     UNPK_openRead,
     UNPK_openWrite,
     UNPK_openAppend,

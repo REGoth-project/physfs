@@ -1,10 +1,12 @@
+#ifndef _INCLUDE_PHYSFS_LZMASDK_H_
+#define _INCLUDE_PHYSFS_LZMASDK_H_
+
 /* This is just a bunch of the LZMA SDK mushed together into one header.
 This code is all public domain, and mostly (if not entirely) written by
 Igor Pavlov. http://www.7-zip.org/sdk.html
 --ryan. */
 
-#ifndef _INCL_PHYSFS_LZMASDK_H_
-#define _INCL_PHYSFS_LZMASDK_H_
+
 
 /* 7zTypes.h -- Basic types
 2013-11-12 : Igor Pavlov : Public domain */
@@ -1450,6 +1452,19 @@ static UInt32 CheckFlag(UInt32 flag)
 #define CHECK_CPUID_IS_SUPPORTED
 #endif
 
+#if defined(__WATCOMC__)
+static void __cpuid(int *cpuinfo, const UInt32 infotype);
+#pragma aux __cpuid =     \
+    ".586"                \
+    "cpuid"               \
+    "mov  [esi+0],eax"    \
+    "mov  [esi+4],ebx"    \
+    "mov  [esi+8],ecx"    \
+    "mov  [esi+12],edx"   \
+    parm [esi] [eax] modify [ebx ecx edx];
+#endif
+
+
 static void MyCPUID(UInt32 function, UInt32 *a, UInt32 *b, UInt32 *c, UInt32 *d)
 {
   #ifdef USE_ASM
@@ -1497,9 +1512,6 @@ static void MyCPUID(UInt32 function, UInt32 *a, UInt32 *b, UInt32 *c, UInt32 *d)
     : "0" (function)) ;
 
   #endif
-
-  #elif defined(__WATCOMC__)
-  *a = *b = *c = *d = 0;  /* !!! FIXME: oh well for now. */
 
   #else
 
@@ -6010,4 +6022,7 @@ static SRes Lzma2Dec_DecodeToDic(CLzma2Dec *p, SizeT dicLimit,
   return SZ_OK;
 }
 
-#endif
+#endif  /* _INCLUDE_PHYSFS_LZMASDK_H_ */
+
+/* end of physfs_lzmasdk.h ... */
+

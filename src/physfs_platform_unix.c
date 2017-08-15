@@ -65,9 +65,9 @@ int __PHYSFS_platformInit(void)
 } /* __PHYSFS_platformInit */
 
 
-int __PHYSFS_platformDeinit(void)
+void __PHYSFS_platformDeinit(void)
 {
-    return 1;  /* always succeed. */
+    /* no-op */
 } /* __PHYSFS_platformDeinit */
 
 
@@ -117,8 +117,6 @@ void __PHYSFS_platformDetectAvailableCDs(PHYSFS_StringCallback cb, void *data)
             add_it = 1;
         else if (strcmp(ent->mnt_type, "supermount") == 0)
             add_it = 1;
-
-        /* !!! FIXME: udf? automount? */
 
         /* add other mount types here */
 

@@ -8,8 +8,6 @@
  *  This file written by Ryan C. Gordon.
  */
 
-/* !!! FIXME: ERR_PAST_EOF shouldn't trigger for reads. Just return zero. */
-
 #define __PHYSICSFS_INTERNAL__
 #include "physfs_internal.h"
 
@@ -59,9 +57,9 @@ typedef struct __PHYSFS_FILEHANDLE__
     PHYSFS_uint8 forReading; /* Non-zero if reading, zero if write/append */
     const DirHandle *dirHandle;  /* Archiver instance that created this */
     PHYSFS_uint8 *buffer;  /* Buffer, if set (NULL otherwise). Don't touch! */
-    PHYSFS_uint32 bufsize;  /* Bufsize, if set (0 otherwise). Don't touch! */
-    PHYSFS_uint32 buffill;  /* Buffer fill size. Don't touch! */
-    PHYSFS_uint32 bufpos;  /* Buffer position. Don't touch! */
+    size_t bufsize;  /* Bufsize, if set (0 otherwise). Don't touch! */
+    size_t buffill;  /* Buffer fill size. Don't touch! */
+    size_t bufpos;  /* Buffer position. Don't touch! */
     struct __PHYSFS_FILEHANDLE__ *next;  /* linked list stuff. */
 } FileHandle;
 
@@ -96,6 +94,30 @@ static void *stateLock = NULL;     /* protects other PhysFS static state. */
 /* allocator ... */
 static int externalAllocator = 0;
 PHYSFS_Allocator allocator;
+
+
+#ifdef PHYSFS_NEED_ATOMIC_OP_FALLBACK
+static inline int __PHYSFS_atomicAdd(int *ptrval, const int val)
+{
+    int retval;
+    __PHYSFS_platformGrabMutex(stateLock);
+    retval = *ptrval;
+    *ptrval = retval + val;
+    __PHYSFS_platformReleaseMutex(stateLock);
+    return retval;
+} /* __PHYSFS_atomicAdd */
+
+int __PHYSFS_ATOMIC_INCR(int *ptrval)
+{
+    return __PHYSFS_atomicAdd(ptrval, 1);
+} /* __PHYSFS_ATOMIC_INCR */
+
+int __PHYSFS_ATOMIC_DECR(int *ptrval)
+{
+    return __PHYSFS_atomicAdd(ptrval, -1);
+} /* __PHYSFS_ATOMIC_DECR */
+#endif
+
 
 
 /* PHYSFS_Io implementation for i/o to physical filesystem... */
@@ -222,7 +244,7 @@ typedef struct __PHYSFS_MemoryIoInfo
     PHYSFS_uint64 len;
     PHYSFS_uint64 pos;
     PHYSFS_Io *parent;
-    volatile PHYSFS_uint32 refcount;
+    int refcount;
     void (*destruct)(void *);
 } MemoryIoInfo;
 
@@ -294,10 +316,7 @@ static PHYSFS_Io *memoryIo_duplicate(PHYSFS_Io *io)
         BAIL(PHYSFS_ERR_OUT_OF_MEMORY, NULL);
     } /* if */
 
-    /* !!! FIXME: want lockless atomic increment. */
-    __PHYSFS_platformGrabMutex(stateLock);
-    info->refcount++;
-    __PHYSFS_platformReleaseMutex(stateLock);
+    __PHYSFS_ATOMIC_INCR(&info->refcount);
 
     memset(newinfo, '\0', sizeof (*info));
     newinfo->buf = info->buf;
@@ -318,7 +337,6 @@ static void memoryIo_destroy(PHYSFS_Io *io)
 {
     MemoryIoInfo *info = (MemoryIoInfo *) io->opaque;
     PHYSFS_Io *parent = info->parent;
-    int should_die = 0;
 
     if (parent != NULL)
     {
@@ -335,13 +353,7 @@ static void memoryIo_destroy(PHYSFS_Io *io)
     /* we _are_ the parent. */
     assert(info->refcount > 0);  /* even in a race, we hold a reference. */
 
-    /* !!! FIXME: want lockless atomic decrement. */
-    __PHYSFS_platformGrabMutex(stateLock);
-    info->refcount--;
-    should_die = (info->refcount == 0);
-    __PHYSFS_platformReleaseMutex(stateLock);
-
-    if (should_die)
+    if (__PHYSFS_ATOMIC_DECR(&info->refcount) == 0)
     {
         void (*destruct)(void *) = info->destruct;
         void *buf = (void *) info->buf;
@@ -730,6 +742,7 @@ PHYSFS_DECL const char *PHYSFS_getErrorByCode(PHYSFS_ErrorCode code)
         case PHYSFS_ERR_OS_ERROR: return "OS reported an error";
         case PHYSFS_ERR_DUPLICATE: return "duplicate resource";
         case PHYSFS_ERR_BAD_PASSWORD: return "bad password";
+        case PHYSFS_ERR_APP_CALLBACK: return "app callback reported error";
     } /* switch */
 
     return NULL;  /* don't know this error code. */
@@ -825,7 +838,7 @@ static const char *find_filename_extension(const char *fname)
 
 
 static DirHandle *tryOpenDir(PHYSFS_Io *io, const PHYSFS_Archiver *funcs,
-                             const char *d, int forWriting)
+                             const char *d, int forWriting, int *_claimed)
 {
     DirHandle *retval = NULL;
     void *opaque = NULL;
@@ -833,7 +846,7 @@ static DirHandle *tryOpenDir(PHYSFS_Io *io, const PHYSFS_Archiver *funcs,
     if (io != NULL)
         BAIL_IF_ERRPASS(!io->seek(io, 0), NULL);
 
-    opaque = funcs->openArchive(io, d, forWriting);
+    opaque = funcs->openArchive(io, d, forWriting, _claimed);
     if (opaque != NULL)
     {
         retval = (DirHandle *) allocator.Malloc(sizeof (DirHandle));
@@ -858,14 +871,16 @@ static DirHandle *openDirectory(PHYSFS_Io *io, const char *d, int forWriting)
     PHYSFS_Archiver **i;
     const char *ext;
     int created_io = 0;
+    int claimed = 0;
+    PHYSFS_ErrorCode errcode;
 
     assert((io != NULL) || (d != NULL));
 
     if (io == NULL)
     {
         /* DIR gets first shot (unlike the rest, it doesn't deal with files). */
-        retval = tryOpenDir(io, &__PHYSFS_Archiver_DIR, d, forWriting);
-        if (retval != NULL)
+        retval = tryOpenDir(io, &__PHYSFS_Archiver_DIR, d, forWriting, &claimed);
+        if (retval || claimed)
             return retval;
 
         io = __PHYSFS_createNativeIo(d, forWriting ? 'w' : 'r');
@@ -877,30 +892,32 @@ static DirHandle *openDirectory(PHYSFS_Io *io, const char *d, int forWriting)
     if (ext != NULL)
     {
         /* Look for archivers with matching file extensions first... */
-        for (i = archivers; (*i != NULL) && (retval == NULL); i++)
+        for (i = archivers; (*i != NULL) && (retval == NULL) && !claimed; i++)
         {
-            if (__PHYSFS_utf8stricmp(ext, (*i)->info.extension) == 0)
-                retval = tryOpenDir(io, *i, d, forWriting);
+            if (PHYSFS_utf8stricmp(ext, (*i)->info.extension) == 0)
+                retval = tryOpenDir(io, *i, d, forWriting, &claimed);
         } /* for */
 
         /* failing an exact file extension match, try all the others... */
-        for (i = archivers; (*i != NULL) && (retval == NULL); i++)
+        for (i = archivers; (*i != NULL) && (retval == NULL) && !claimed; i++)
         {
-            if (__PHYSFS_utf8stricmp(ext, (*i)->info.extension) != 0)
-                retval = tryOpenDir(io, *i, d, forWriting);
+            if (PHYSFS_utf8stricmp(ext, (*i)->info.extension) != 0)
+                retval = tryOpenDir(io, *i, d, forWriting, &claimed);
         } /* for */
     } /* if */
 
     else  /* no extension? Try them all. */
     {
-        for (i = archivers; (*i != NULL) && (retval == NULL); i++)
-            retval = tryOpenDir(io, *i, d, forWriting);
+        for (i = archivers; (*i != NULL) && (retval == NULL) && !claimed; i++)
+            retval = tryOpenDir(io, *i, d, forWriting, &claimed);
     } /* else */
+
+    errcode = currentErrorCode();
 
     if ((!retval) && (created_io))
         io->destroy(io);
 
-    BAIL_IF(!retval, PHYSFS_ERR_UNSUPPORTED, NULL);
+    BAIL_IF(!retval, claimed ? errcode : PHYSFS_ERR_UNSUPPORTED, NULL);
     return retval;
 } /* openDirectory */
 
@@ -962,7 +979,6 @@ static int sanitizePlatformIndependentPath(const char *src, char *dst)
  */
 static int partOfMountPoint(DirHandle *h, char *fname)
 {
-    /* !!! FIXME: This code feels gross. */
     int rc;
     size_t len, mntpntlen;
 
@@ -1131,6 +1147,7 @@ static int initStaticArchivers(void)
         REGISTER_STATIC_ARCHIVER(ZIP);
     #endif
     #if PHYSFS_SUPPORTS_7Z
+        SZIP_global_init();
         REGISTER_STATIC_ARCHIVER(7Z);
     #endif
     #if PHYSFS_SUPPORTS_GRP
@@ -1364,8 +1381,7 @@ static int doDeinit(void)
 
     errorLock = stateLock = NULL;
 
-    /* !!! FIXME: what on earth are you supposed to do if this fails? */
-    BAIL_IF_ERRPASS(!__PHYSFS_platformDeinit(), 0);
+    __PHYSFS_platformDeinit();
 
     return 1;
 } /* doDeinit */
@@ -1420,7 +1436,7 @@ static int doRegisterArchiver(const PHYSFS_Archiver *_archiver)
     BAIL_IF(!_archiver->info.author, PHYSFS_ERR_INVALID_ARGUMENT, 0);
     BAIL_IF(!_archiver->info.url, PHYSFS_ERR_INVALID_ARGUMENT, 0);
     BAIL_IF(!_archiver->openArchive, PHYSFS_ERR_INVALID_ARGUMENT, 0);
-    BAIL_IF(!_archiver->enumerateFiles, PHYSFS_ERR_INVALID_ARGUMENT, 0);
+    BAIL_IF(!_archiver->enumerate, PHYSFS_ERR_INVALID_ARGUMENT, 0);
     BAIL_IF(!_archiver->openRead, PHYSFS_ERR_INVALID_ARGUMENT, 0);
     BAIL_IF(!_archiver->openWrite, PHYSFS_ERR_INVALID_ARGUMENT, 0);
     BAIL_IF(!_archiver->openAppend, PHYSFS_ERR_INVALID_ARGUMENT, 0);
@@ -1432,8 +1448,8 @@ static int doRegisterArchiver(const PHYSFS_Archiver *_archiver)
     ext = _archiver->info.extension;
     for (i = 0; i < numArchivers; i++)
     {
-        if (__PHYSFS_utf8stricmp(archiveInfo[i]->extension, ext) == 0)
-            BAIL(PHYSFS_ERR_DUPLICATE, 0);  /* !!! FIXME: better error? ERR_IN_USE? */
+        if (PHYSFS_utf8stricmp(archiveInfo[i]->extension, ext) == 0)
+            BAIL(PHYSFS_ERR_DUPLICATE, 0);
     } /* for */
 
     /* make a copy of the data. */
@@ -1508,7 +1524,7 @@ int PHYSFS_deregisterArchiver(const char *ext)
     __PHYSFS_platformGrabMutex(stateLock);
     for (i = 0; i < numArchivers; i++)
     {
-        if (__PHYSFS_utf8stricmp(archiveInfo[i]->extension, ext) == 0)
+        if (PHYSFS_utf8stricmp(archiveInfo[i]->extension, ext) == 0)
         {
             const int retval = doDeregisterArchiver(i);
             __PHYSFS_platformReleaseMutex(stateLock);
@@ -1650,7 +1666,6 @@ int PHYSFS_setWriteDir(const char *newDir)
 
     if (newDir != NULL)
     {
-        /* !!! FIXME: PHYSFS_Io shouldn't be NULL */
         writeDir = createDirHandle(NULL, newDir, NULL, 1);
         retval = (writeDir != NULL);
     } /* if */
@@ -1848,27 +1863,53 @@ void PHYSFS_getSearchPathCallback(PHYSFS_StringCallback callback, void *data)
 } /* PHYSFS_getSearchPathCallback */
 
 
-/* Split out to avoid stack allocation in a loop. */
-static void setSaneCfgAddPath(const char *i, const size_t l, const char *dirsep,
-                              int archivesFirst)
+typedef struct setSaneCfgEnumData
 {
-    const char *d = PHYSFS_getRealDir(i);
-    const size_t allocsize = strlen(d) + strlen(dirsep) + l + 1;
-    char *str = (char *) __PHYSFS_smallAlloc(allocsize);
-    if (str != NULL)
+    const char *archiveExt;
+    size_t archiveExtLen;
+    int archivesFirst;
+    PHYSFS_ErrorCode errcode;
+} setSaneCfgEnumData;
+
+static int setSaneCfgEnumCallback(void *_data, const char *dir, const char *f)
+{
+    setSaneCfgEnumData *data = (setSaneCfgEnumData *) _data;
+    const size_t extlen = data->archiveExtLen;
+    const size_t l = strlen(f);
+    const char *ext;
+
+    if ((l > extlen) && (f[l - extlen - 1] == '.'))
     {
-        snprintf(str, allocsize, "%s%s%s", d, dirsep, i);
-        PHYSFS_mount(str, NULL, archivesFirst == 0);
-        __PHYSFS_smallFree(str);
+        ext = f + (l - extlen);
+        if (PHYSFS_utf8stricmp(ext, data->archiveExt) == 0)
+        {
+            const char dirsep = __PHYSFS_platformDirSeparator;
+            const char *d = PHYSFS_getRealDir(f);
+            const size_t allocsize = strlen(d) + l + 2;
+            char *str = (char *) __PHYSFS_smallAlloc(allocsize);
+            if (str == NULL)
+                data->errcode = PHYSFS_ERR_OUT_OF_MEMORY;
+            else
+            {
+                snprintf(str, allocsize, "%s%c%s", d, dirsep, f);
+                if (!PHYSFS_mount(str, NULL, data->archivesFirst == 0))
+                    data->errcode = currentErrorCode();
+                __PHYSFS_smallFree(str);
+            } /* else */
+        } /* if */
     } /* if */
-} /* setSaneCfgAddPath */
+
+    /* !!! FIXME: if we want to abort on errors... */
+    /* return (data->errcode != PHYSFS_ERR_OK) ? -1 : 1; */
+
+    return 1;  /* keep going */
+} /* setSaneCfgEnumCallback */
 
 
 int PHYSFS_setSaneConfig(const char *organization, const char *appName,
                          const char *archiveExt, int includeCdRoms,
                          int archivesFirst)
 {
-    const char *dirsep = PHYSFS_getDirSeparator();
     const char *basedir;
     const char *prefdir;
 
@@ -1881,6 +1922,8 @@ int PHYSFS_setSaneConfig(const char *organization, const char *appName,
     BAIL_IF_ERRPASS(!basedir, 0);
 
     BAIL_IF(!PHYSFS_setWriteDir(prefdir), PHYSFS_ERR_NO_WRITE_DIR, 0);
+
+    /* !!! FIXME: these can fail and we should report that... */
 
     /* Put write dir first in search path... */
     PHYSFS_mount(prefdir, NULL, 0);
@@ -1901,23 +1944,19 @@ int PHYSFS_setSaneConfig(const char *organization, const char *appName,
     /* Root out archives, and add them to search path... */
     if (archiveExt != NULL)
     {
-        char **rc = PHYSFS_enumerateFiles("/");
-        char **i;
-        size_t extlen = strlen(archiveExt);
-        char *ext;
-
-        for (i = rc; *i != NULL; i++)
+        setSaneCfgEnumData data;
+        memset(&data, '\0', sizeof (data));
+        data.archiveExt = archiveExt;
+        data.archiveExtLen = strlen(archiveExt);
+        data.archivesFirst = archivesFirst;
+        data.errcode = PHYSFS_ERR_OK;
+        if (!PHYSFS_enumerate("/", setSaneCfgEnumCallback, &data))
         {
-            size_t l = strlen(*i);
-            if ((l > extlen) && ((*i)[l - extlen - 1] == '.'))
-            {
-                ext = (*i) + (l - extlen);
-                if (__PHYSFS_utf8stricmp(ext, archiveExt) == 0)
-                    setSaneCfgAddPath(*i, l, dirsep, archivesFirst);
-            } /* if */
-        } /* for */
-
-        PHYSFS_freeList(rc);
+            /* !!! FIXME: use this if we're reporting errors.
+            PHYSFS_ErrorCode errcode = currentErrorCode();
+            if (errcode == PHYSFS_ERR_APP_CALLBACK)
+                errcode = data->errcode; */
+        } /* if */
     } /* if */
 
     return 1;
@@ -2131,9 +2170,9 @@ int PHYSFS_delete(const char *_fname)
 } /* PHYSFS_delete */
 
 
-const char *PHYSFS_getRealDir(const char *_fname)
+static DirHandle *getRealDirHandle(const char *_fname)
 {
-    const char *retval = NULL;
+    DirHandle *retval = NULL;
     char *fname = NULL;
     size_t len;
 
@@ -2150,7 +2189,7 @@ const char *PHYSFS_getRealDir(const char *_fname)
             char *arcfname = fname;
             if (partOfMountPoint(i, arcfname))
             {
-                retval = i->dirName;
+                retval = i;
                 break;
             } /* if */
             else if (verifyPath(i, &arcfname, 0))
@@ -2158,7 +2197,7 @@ const char *PHYSFS_getRealDir(const char *_fname)
                 PHYSFS_Stat statbuf;
                 if (i->funcs->stat(i->opaque, arcfname, &statbuf))
                 {
-                    retval = i->dirName;
+                    retval = i;
                     break;
                 } /* if */
             } /* if */
@@ -2168,6 +2207,12 @@ const char *PHYSFS_getRealDir(const char *_fname)
 
     __PHYSFS_smallFree(fname);
     return retval;
+} /* getRealDirHandle */
+
+const char *PHYSFS_getRealDir(const char *fname)
+{
+    DirHandle *dh = getRealDirHandle(fname);
+    return dh ? dh->dirName : NULL;
 } /* PHYSFS_getRealDir */
 
 
@@ -2203,7 +2248,7 @@ static int locateInStringList(const char *str,
 } /* locateInStringList */
 
 
-static void enumFilesCallback(void *data, const char *origdir, const char *str)
+static int enumFilesCallback(void *data, const char *origdir, const char *str)
 {
     PHYSFS_uint32 pos;
     void *ptr;
@@ -2216,7 +2261,7 @@ static void enumFilesCallback(void *data, const char *origdir, const char *str)
      */
     pos = pecd->size;
     if (locateInStringList(str, pecd->list, &pos))
-        return;  /* already in the list. */
+        return 1;  /* already in the list, but keep going. */
 
     ptr = allocator.Realloc(pecd->list, (pecd->size + 2) * sizeof (char *));
     newstr = (char *) allocator.Malloc(strlen(str) + 1);
@@ -2224,7 +2269,13 @@ static void enumFilesCallback(void *data, const char *origdir, const char *str)
         pecd->list = (char **) ptr;
 
     if ((ptr == NULL) || (newstr == NULL))
-        return;  /* better luck next time. */
+    {
+        if (newstr)
+            allocator.Free(newstr);
+
+        pecd->errcode = PHYSFS_ERR_OUT_OF_MEMORY;
+        return -1;  /* better luck next time. */
+    } /* if */
 
     strcpy(newstr, str);
 
@@ -2236,6 +2287,8 @@ static void enumFilesCallback(void *data, const char *origdir, const char *str)
 
     pecd->list[pos] = newstr;
     pecd->size++;
+
+    return 1;
 } /* enumFilesCallback */
 
 
@@ -2245,7 +2298,17 @@ char **PHYSFS_enumerateFiles(const char *path)
     memset(&ecd, '\0', sizeof (ecd));
     ecd.list = (char **) allocator.Malloc(sizeof (char *));
     BAIL_IF(!ecd.list, PHYSFS_ERR_OUT_OF_MEMORY, NULL);
-    PHYSFS_enumerateFilesCallback(path, enumFilesCallback, &ecd);
+    if (!PHYSFS_enumerate(path, enumFilesCallback, &ecd))
+    {
+        const PHYSFS_ErrorCode errcode = currentErrorCode();
+        PHYSFS_uint32 i;
+        for (i = 0; i < ecd.size; i++)
+            allocator.Free(ecd.list[i]);
+        allocator.Free(ecd.list);
+        BAIL_IF(errcode == PHYSFS_ERR_APP_CALLBACK, ecd.errcode, NULL);
+        return NULL;
+    } /* if */
+
     ecd.list[ecd.size] = NULL;
     return ecd.list;
 } /* PHYSFS_enumerateFiles */
@@ -2254,8 +2317,8 @@ char **PHYSFS_enumerateFiles(const char *path)
 /*
  * Broke out to seperate function so we can use stack allocation gratuitously.
  */
-static void enumerateFromMountPoint(DirHandle *i, const char *arcfname,
-                                    PHYSFS_EnumFilesCallback callback,
+static int enumerateFromMountPoint(DirHandle *i, const char *arcfname,
+                                    PHYSFS_EnumerateCallback callback,
                                     const char *_fname, void *data)
 {
     const size_t len = strlen(arcfname);
@@ -2263,70 +2326,90 @@ static void enumerateFromMountPoint(DirHandle *i, const char *arcfname,
     char *end = NULL;
     const size_t slen = strlen(i->mountPoint) + 1;
     char *mountPoint = (char *) __PHYSFS_smallAlloc(slen);
+    int rc;
 
-    if (mountPoint == NULL)
-        return;  /* oh well. */
+    BAIL_IF(!mountPoint, PHYSFS_ERR_OUT_OF_MEMORY, -1);
 
     strcpy(mountPoint, i->mountPoint);
     ptr = mountPoint + ((len) ? len + 1 : 0);
     end = strchr(ptr, '/');
     assert(end);  /* should always find a terminating '/'. */
     *end = '\0';
-    callback(data, _fname, ptr);
+    rc = callback(data, _fname, ptr);
     __PHYSFS_smallFree(mountPoint);
+
+    BAIL_IF(rc == -1, PHYSFS_ERR_APP_CALLBACK, -1);
+    return rc;
 } /* enumerateFromMountPoint */
 
 
 typedef struct SymlinkFilterData
 {
-    PHYSFS_EnumFilesCallback callback;
+    PHYSFS_EnumerateCallback callback;
     void *callbackData;
     DirHandle *dirhandle;
+    const char *arcfname;
+    PHYSFS_ErrorCode errcode;
 } SymlinkFilterData;
 
-/* !!! FIXME: broken if in a virtual mountpoint (stat call fails). */
-static void enumCallbackFilterSymLinks(void *_data, const char *origdir,
-                                       const char *fname)
+static int enumCallbackFilterSymLinks(void *_data, const char *origdir,
+                                      const char *fname)
 {
-    const char *trimmedDir = (*origdir == '/') ? (origdir+1) : origdir;
+    SymlinkFilterData *data = (SymlinkFilterData *) _data;
+    const DirHandle *dh = data->dirhandle;
+    const char *arcfname = data->arcfname;
+    PHYSFS_Stat statbuf;
+    const char *trimmedDir = (*arcfname == '/') ? (arcfname + 1) : arcfname;
     const size_t slen = strlen(trimmedDir) + strlen(fname) + 2;
     char *path = (char *) __PHYSFS_smallAlloc(slen);
+    int retval = 1;
 
-    if (path != NULL)
+    if (path == NULL)
     {
-        SymlinkFilterData *data = (SymlinkFilterData *) _data;
-        const DirHandle *dh = data->dirhandle;
-        PHYSFS_Stat statbuf;
-
-        snprintf(path, slen, "%s%s%s", trimmedDir, *trimmedDir ? "/" : "", fname);
-        if (dh->funcs->stat(dh->opaque, path, &statbuf))
-        {
-            /* Pass it on to the application if it's not a symlink. */
-            if (statbuf.filetype != PHYSFS_FILETYPE_SYMLINK)
-                data->callback(data->callbackData, origdir, fname);
-        } /* if */
-
-        __PHYSFS_smallFree(path);
+        data->errcode = PHYSFS_ERR_OUT_OF_MEMORY;
+        return -1;
     } /* if */
+
+    snprintf(path, slen, "%s%s%s", trimmedDir, *trimmedDir ? "/" : "", fname);
+
+    if (!dh->funcs->stat(dh->opaque, path, &statbuf))
+    {
+        data->errcode = currentErrorCode();
+        retval = -1;
+    } /* if */
+    else
+    {
+        /* Pass it on to the application if it's not a symlink. */
+        if (statbuf.filetype != PHYSFS_FILETYPE_SYMLINK)
+        {
+            retval = data->callback(data->callbackData, origdir, fname);
+            if (retval == -1)
+                data->errcode = PHYSFS_ERR_APP_CALLBACK;
+        } /* if */
+    } /* else */
+
+    __PHYSFS_smallFree(path);
+
+    return retval;
 } /* enumCallbackFilterSymLinks */
 
 
-/* !!! FIXME: this should report error conditions. */
-void PHYSFS_enumerateFilesCallback(const char *_fname,
-                                   PHYSFS_EnumFilesCallback callback,
-                                   void *data)
+int PHYSFS_enumerate(const char *_fn, PHYSFS_EnumerateCallback cb, void *data)
 {
+    int retval = 1;
     size_t len;
     char *fname;
 
-    BAIL_IF(!_fname, PHYSFS_ERR_INVALID_ARGUMENT, ) /*0*/;
-    BAIL_IF(!callback, PHYSFS_ERR_INVALID_ARGUMENT, ) /*0*/;
+    BAIL_IF(!_fn, PHYSFS_ERR_INVALID_ARGUMENT, 0);
+    BAIL_IF(!cb, PHYSFS_ERR_INVALID_ARGUMENT, 0);
 
-    len = strlen(_fname) + 1;
+    len = strlen(_fn) + 1;
     fname = (char *) __PHYSFS_smallAlloc(len);
-    BAIL_IF(!fname, PHYSFS_ERR_OUT_OF_MEMORY, ) /*0*/;
+    BAIL_IF(!fname, PHYSFS_ERR_OUT_OF_MEMORY, 0);
 
-    if (sanitizePlatformIndependentPath(_fname, fname))
+    if (!sanitizePlatformIndependentPath(_fn, fname))
+        retval = 0;
+    else
     {
         DirHandle *i;
         SymlinkFilterData filterdata;
@@ -2336,42 +2419,88 @@ void PHYSFS_enumerateFilesCallback(const char *_fname,
         if (!allowSymLinks)
         {
             memset(&filterdata, '\0', sizeof (filterdata));
-            filterdata.callback = callback;
+            filterdata.callback = cb;
             filterdata.callbackData = data;
         } /* if */
 
-        for (i = searchPath; i != NULL; i = i->next)
+        for (i = searchPath; (retval > 0) && (i != NULL); i = i->next)
         {
             char *arcfname = fname;
+
             if (partOfMountPoint(i, arcfname))
-                enumerateFromMountPoint(i, arcfname, callback, _fname, data);
+                retval = enumerateFromMountPoint(i, arcfname, cb, _fn, data);
 
             else if (verifyPath(i, &arcfname, 0))
             {
-                if ((!allowSymLinks) && (i->funcs->info.supportsSymlinks))
+                PHYSFS_Stat statbuf;
+                if (!i->funcs->stat(i->opaque, arcfname, &statbuf))
+                {
+                    if (currentErrorCode() == PHYSFS_ERR_NOT_FOUND)
+                        continue;  /* no such dir in this archive, skip it. */
+                } /* if */
+
+                if (statbuf.filetype != PHYSFS_FILETYPE_DIRECTORY)
+                    continue;  /* not a directory in this archive, skip it. */
+
+                else if ((!allowSymLinks) && (i->funcs->info.supportsSymlinks))
                 {
                     filterdata.dirhandle = i;
-                    i->funcs->enumerateFiles(i->opaque, arcfname,
-                                             enumCallbackFilterSymLinks,
-                                             _fname, &filterdata);
-                } /* if */
+                    filterdata.arcfname = arcfname;
+                    filterdata.errcode = PHYSFS_ERR_OK;
+                    retval = i->funcs->enumerate(i->opaque, arcfname,
+                                                 enumCallbackFilterSymLinks,
+                                                 _fn, &filterdata);
+                    if (retval == -1)
+                    {
+                        if (currentErrorCode() == PHYSFS_ERR_APP_CALLBACK)
+                            PHYSFS_setErrorCode(filterdata.errcode);
+                    } /* if */
+                } /* else if */
                 else
                 {
-                    i->funcs->enumerateFiles(i->opaque, arcfname,
-                                             callback, _fname, data);
+                    retval = i->funcs->enumerate(i->opaque, arcfname,
+                                                 cb, _fn, data);
                 } /* else */
             } /* else if */
         } /* for */
+
         __PHYSFS_platformReleaseMutex(stateLock);
     } /* if */
 
     __PHYSFS_smallFree(fname);
+
+    return (retval < 0) ? 0 : 1;
+} /* PHYSFS_enumerate */
+
+
+typedef struct
+{
+    PHYSFS_EnumFilesCallback callback;
+    void *data;
+} LegacyEnumFilesCallbackData;
+
+static int enumFilesCallbackAlwaysSucceed(void *data, const char *origdir,
+                                          const char *fname)
+{
+    LegacyEnumFilesCallbackData *cbdata = (LegacyEnumFilesCallbackData *) data;
+    cbdata->callback(cbdata->data, origdir, fname);
+    return 1;
+} /* enumFilesCallbackAlwaysSucceed */
+
+void PHYSFS_enumerateFilesCallback(const char *fname,
+                                   PHYSFS_EnumFilesCallback callback,
+                                   void *data)
+{
+    LegacyEnumFilesCallbackData cbdata;
+    cbdata.callback = callback;
+    cbdata.data = data;
+    (void) PHYSFS_enumerate(fname, enumFilesCallbackAlwaysSucceed, &cbdata);
 } /* PHYSFS_enumerateFilesCallback */
 
 
 int PHYSFS_exists(const char *fname)
 {
-    return (PHYSFS_getRealDir(fname) != NULL);
+    return (getRealDirHandle(fname) != NULL);
 } /* PHYSFS_exists */
 
 
@@ -2580,12 +2709,11 @@ int PHYSFS_close(PHYSFS_File *_handle)
 } /* PHYSFS_close */
 
 
-static PHYSFS_sint64 doBufferedRead(FileHandle *fh, void *buffer,
-                                    PHYSFS_uint64 len)
+static PHYSFS_sint64 doBufferedRead(FileHandle *fh, void *buffer, size_t len)
 {
     PHYSFS_Io *io = NULL;
     PHYSFS_sint64 retval = 0;
-    PHYSFS_uint32 buffered = 0;
+    size_t buffered = 0;
     PHYSFS_sint64 rc = 0;
 
     if (len == 0)
@@ -2594,17 +2722,17 @@ static PHYSFS_sint64 doBufferedRead(FileHandle *fh, void *buffer,
     buffered = fh->buffill - fh->bufpos;
     if (buffered >= len)  /* totally in the buffer, just copy and return! */
     {
-        memcpy(buffer, fh->buffer + fh->bufpos, (size_t) len);
-        fh->bufpos += (PHYSFS_uint32) len;
+        memcpy(buffer, fh->buffer + fh->bufpos, len);
+        fh->bufpos += len;
         return (PHYSFS_sint64) len;
     } /* if */
 
     else if (buffered > 0) /* partially in the buffer... */
     {
-        memcpy(buffer, fh->buffer + fh->bufpos, (size_t) buffered);
+        memcpy(buffer, fh->buffer + fh->bufpos, buffered);
         buffer = ((PHYSFS_uint8 *) buffer) + buffered;
         len -= buffered;
-        retval = buffered;
+        retval = (PHYSFS_sint64) buffered;
     } /* if */
 
     /* if you got here, the buffer is drained and we still need bytes. */
@@ -2628,7 +2756,7 @@ static PHYSFS_sint64 doBufferedRead(FileHandle *fh, void *buffer,
         return ((retval == 0) ? rc : retval);
 
     assert(fh->bufpos == 0);
-    fh->buffill = (PHYSFS_uint32) rc;
+    fh->buffill = (size_t) rc;
     rc = doBufferedRead(fh, buffer, len);  /* go from the start, again. */
     if (rc < 0)
         return ((retval == 0) ? rc : retval);
@@ -2647,8 +2775,9 @@ PHYSFS_sint64 PHYSFS_read(PHYSFS_File *handle, void *buffer,
 
 
 PHYSFS_sint64 PHYSFS_readBytes(PHYSFS_File *handle, void *buffer,
-                               PHYSFS_uint64 len)
+                               PHYSFS_uint64 _len)
 {
+    const size_t len = (size_t) _len;
     FileHandle *fh = (FileHandle *) handle;
 
 #ifdef PHYSFS_NO_64BIT_SUPPORT
@@ -2657,10 +2786,10 @@ PHYSFS_sint64 PHYSFS_readBytes(PHYSFS_File *handle, void *buffer,
     const PHYSFS_uint64 maxlen = __PHYSFS_UI64(0x7FFFFFFFFFFFFFFF);
 #endif
 
-    if (!__PHYSFS_ui64FitsAddressSpace(len))
+    if (!__PHYSFS_ui64FitsAddressSpace(_len))
         BAIL(PHYSFS_ERR_INVALID_ARGUMENT, -1);
 
-    BAIL_IF(len > maxlen, PHYSFS_ERR_INVALID_ARGUMENT, -1);
+    BAIL_IF(_len > maxlen, PHYSFS_ERR_INVALID_ARGUMENT, -1);
     BAIL_IF(!fh->forReading, PHYSFS_ERR_OPEN_FOR_WRITING, -1);
     BAIL_IF_ERRPASS(len == 0, 0);
     if (fh->buffer)
@@ -2671,15 +2800,15 @@ PHYSFS_sint64 PHYSFS_readBytes(PHYSFS_File *handle, void *buffer,
 
 
 static PHYSFS_sint64 doBufferedWrite(PHYSFS_File *handle, const void *buffer,
-                                     PHYSFS_uint64 len)
+                                     const size_t len)
 {
     FileHandle *fh = (FileHandle *) handle;
 
     /* whole thing fits in the buffer? */
-    if ( (((PHYSFS_uint64) fh->buffill) + len) < fh->bufsize )
+    if ((fh->buffill + len) < fh->bufsize)
     {
-        memcpy(fh->buffer + fh->buffill, buffer, (size_t) len);
-        fh->buffill += (PHYSFS_uint32) len;
+        memcpy(fh->buffer + fh->buffill, buffer, len);
+        fh->buffill += len;
         return (PHYSFS_sint64) len;
     } /* if */
 
@@ -2699,8 +2828,9 @@ PHYSFS_sint64 PHYSFS_write(PHYSFS_File *handle, const void *buffer,
 
 
 PHYSFS_sint64 PHYSFS_writeBytes(PHYSFS_File *handle, const void *buffer,
-                                PHYSFS_uint64 len)
+                                PHYSFS_uint64 _len)
 {
+    const size_t len = (size_t) _len;
     FileHandle *fh = (FileHandle *) handle;
 
 #ifdef PHYSFS_NO_64BIT_SUPPORT
@@ -2709,10 +2839,10 @@ PHYSFS_sint64 PHYSFS_writeBytes(PHYSFS_File *handle, const void *buffer,
     const PHYSFS_uint64 maxlen = __PHYSFS_UI64(0x7FFFFFFFFFFFFFFF);
 #endif
 
-    if (!__PHYSFS_ui64FitsAddressSpace(len))
+    if (!__PHYSFS_ui64FitsAddressSpace(_len))
         BAIL(PHYSFS_ERR_INVALID_ARGUMENT, -1);
 
-    BAIL_IF(len > maxlen, PHYSFS_ERR_INVALID_ARGUMENT, -1);
+    BAIL_IF(_len > maxlen, PHYSFS_ERR_INVALID_ARGUMENT, -1);
     BAIL_IF(fh->forReading, PHYSFS_ERR_OPEN_FOR_READING, -1);
     BAIL_IF_ERRPASS(len == 0, 0);
     if (fh->buffer)
@@ -2766,8 +2896,10 @@ int PHYSFS_seek(PHYSFS_File *handle, PHYSFS_uint64 pos)
         /* avoid throwing away our precious buffer if seeking within it. */
         PHYSFS_sint64 offset = pos - PHYSFS_tell(handle);
         if ( /* seeking within the already-buffered range? */
-            ((offset >= 0) && (offset <= fh->buffill - fh->bufpos)) /* fwd */
-            || ((offset < 0) && (-offset <= fh->bufpos)) /* backward */ )
+             /* forward? */
+            ((offset >= 0) && (((size_t)offset) <= fh->buffill-fh->bufpos)) ||
+            /* backward? */
+            ((offset < 0) && (((size_t) -offset) <= fh->bufpos)) )
         {
             fh->bufpos += (PHYSFS_uint32) offset;
             return 1; /* successful seek */
@@ -2790,12 +2922,10 @@ PHYSFS_sint64 PHYSFS_fileLength(PHYSFS_File *handle)
 int PHYSFS_setBuffer(PHYSFS_File *handle, PHYSFS_uint64 _bufsize)
 {
     FileHandle *fh = (FileHandle *) handle;
-    PHYSFS_uint32 bufsize;
+    const size_t bufsize = (size_t) _bufsize;
 
-    /* !!! FIXME: actually, why use 32 bits here? */
-    /*BAIL_IF(_bufsize > 0xFFFFFFFF, "buffer must fit in 32-bits", 0);*/
-    BAIL_IF(_bufsize > __PHYSFS_UI64(0xFFFFFFFF), PHYSFS_ERR_INVALID_ARGUMENT, 0);
-    bufsize = (PHYSFS_uint32) _bufsize;
+    if (!__PHYSFS_ui64FitsAddressSpace(_bufsize))
+        BAIL(PHYSFS_ERR_INVALID_ARGUMENT, 0);
 
     BAIL_IF_ERRPASS(!PHYSFS_flush(handle), 0);
 
@@ -2872,7 +3002,7 @@ int PHYSFS_stat(const char *_fname, PHYSFS_Stat *stat)
     stat->createtime = -1;
     stat->accesstime = -1;
     stat->filetype = PHYSFS_FILETYPE_OTHER;
-    stat->readonly = 1;  /* !!! FIXME */
+    stat->readonly = 1;
 
     if (sanitizePlatformIndependentPath(_fname, fname))
     {
@@ -2894,14 +3024,11 @@ int PHYSFS_stat(const char *_fname, PHYSFS_Stat *stat)
                 if (exists)
                 {
                     stat->filetype = PHYSFS_FILETYPE_DIRECTORY;
-                    stat->readonly = 1;  /* !!! FIXME */
+                    stat->readonly = 1;
                     retval = 1;
                 } /* if */
                 else if (verifyPath(i, &arcfname, 0))
                 {
-                    /* !!! FIXME: this test is wrong and should be elsewhere. */
-                    stat->readonly = !(writeDir &&
-                                 (strcmp(writeDir->dirName, i->dirName) == 0));
                     retval = i->funcs->stat(i->opaque, arcfname, stat);
                     if ((retval) || (currentErrorCode() != PHYSFS_ERR_NOT_FOUND))
                         exists = 1;
@@ -2916,13 +3043,14 @@ int PHYSFS_stat(const char *_fname, PHYSFS_Stat *stat)
 } /* PHYSFS_stat */
 
 
-int __PHYSFS_readAll(PHYSFS_Io *io, void *buf, const PHYSFS_uint64 len)
+int __PHYSFS_readAll(PHYSFS_Io *io, void *buf, const size_t _len)
 {
+    const PHYSFS_uint64 len = (PHYSFS_uint64) _len;
     return (io->read(io, buf, len) == len);
 } /* __PHYSFS_readAll */
 
 
-void *__PHYSFS_initSmallAlloc(void *ptr, PHYSFS_uint64 len)
+void *__PHYSFS_initSmallAlloc(void *ptr, const size_t len)
 {
     void *useHeap = ((ptr == NULL) ? ((void *) 1) : ((void *) 0));
     if (useHeap)  /* too large for stack allocation or alloca() failed. */
@@ -2931,8 +3059,8 @@ void *__PHYSFS_initSmallAlloc(void *ptr, PHYSFS_uint64 len)
     if (ptr != NULL)
     {
         void **retval = (void **) ptr;
-        /*printf("%s alloc'd (%d) bytes at (%p).\n",
-                useHeap ? "heap" : "stack", (int) len, ptr);*/
+        /*printf("%s alloc'd (%lld) bytes at (%p).\n",
+                useHeap ? "heap" : "stack", (long long) len, ptr);*/
         *retval = useHeap;
         return retval + 1;
     } /* if */
@@ -2946,7 +3074,7 @@ void __PHYSFS_smallFree(void *ptr)
     if (ptr != NULL)
     {
         void **block = ((void **) ptr) - 1;
-        const int useHeap = (*block != 0);
+        const int useHeap = (*block != NULL);
         if (useHeap)
             allocator.Free(block);
         /*printf("%s free'd (%p).\n", useHeap ? "heap" : "stack", block);*/
@@ -3127,21 +3255,27 @@ void *__PHYSFS_DirTreeFind(__PHYSFS_DirTree *dt, const char *path)
     BAIL(PHYSFS_ERR_NOT_FOUND, NULL);
 } /* __PHYSFS_DirTreeFind */
 
-void __PHYSFS_DirTreeEnumerateFiles(void *opaque, const char *dname,
-                                    PHYSFS_EnumFilesCallback cb,
-                                    const char *origdir, void *callbackdata)
+int __PHYSFS_DirTreeEnumerate(void *opaque, const char *dname,
+                              PHYSFS_EnumerateCallback cb,
+                              const char *origdir, void *callbackdata)
 {
-    __PHYSFS_DirTree *tree = ((__PHYSFS_DirTree *) opaque);
+    __PHYSFS_DirTree *tree = (__PHYSFS_DirTree *) opaque;
     const __PHYSFS_DirTreeEntry *entry = __PHYSFS_DirTreeFind(tree, dname);
     if (entry && entry->isdir)
     {
         for (entry = entry->children; entry; entry = entry->sibling)
         {
-            const char *ptr = strrchr(entry->name, '/');
-            cb(callbackdata, origdir, ptr ? ptr + 1 : entry->name);
+            const char *name = entry->name;
+            const char *ptr = strrchr(name, '/');
+            const int rc = cb(callbackdata, origdir, ptr ? ptr + 1 : name);
+            BAIL_IF(rc == -1, PHYSFS_ERR_APP_CALLBACK, -1);
+            if (rc == 0)
+                return 0;
         } /* for */
     } /* if */
-} /* __PHYSFS_DirTreeEnumerateFiles */
+
+    return 1;
+} /* __PHYSFS_DirTreeEnumerate */
 
 
 void __PHYSFS_DirTreeDeinit(__PHYSFS_DirTree *dt)

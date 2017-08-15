@@ -210,22 +210,23 @@ static void SZIP_closeArchive(void *opaque)
 } /* SZIP_closeArchive */
 
 
-static void *SZIP_openArchive(PHYSFS_Io *io, const char *name, int forWriting)
+static void *SZIP_openArchive(PHYSFS_Io *io, const char *name,
+                              int forWriting, int *claimed)
 {
+    static const PHYSFS_uint8 wantedsig[] = { '7','z',0xBC,0xAF,0x27,0x1C };
     SZIPLookToRead stream;
     ISzAlloc *alloc = &SZIP_SzAlloc;
     SZIPinfo *info = NULL;
     SRes rc;
-
-    /* !!! FIXME: this is a race condition; we need a global init method that gets called when registering new archivers. */
-    static int generatedTable = 0;
-    if (!generatedTable)
-    {
-        generatedTable = 1;
-        CrcGenerateTable();
-    } /* if */
+    PHYSFS_uint8 sig[6];
+    PHYSFS_sint64 pos;
 
     BAIL_IF(forWriting, PHYSFS_ERR_READ_ONLY, NULL);
+    pos = io->tell(io);
+    BAIL_IF_ERRPASS(pos == -1, NULL);
+    BAIL_IF_ERRPASS(io->read(io, sig, 6) != 6, NULL);
+    *claimed = (memcmp(sig, wantedsig, 6) == 0);
+    BAIL_IF_ERRPASS(!io->seek(io, pos), NULL);
 
     info = (SZIPinfo *) allocator.Malloc(sizeof (SZIPinfo));
     BAIL_IF(!info, PHYSFS_ERR_OUT_OF_MEMORY, NULL);
@@ -387,6 +388,19 @@ static int SZIP_stat(void *opaque, const char *path, PHYSFS_Stat *stat)
 } /* SZIP_stat */
 
 
+void SZIP_global_init(void)
+{
+    /* this just needs to calculate some things, so it only ever
+       has to run once, even after a deinit. */
+    static int generatedTable = 0;
+    if (!generatedTable)
+    {
+        generatedTable = 1;
+        CrcGenerateTable();
+    } /* if */
+} /* SZIP_global_init */
+
+
 const PHYSFS_Archiver __PHYSFS_Archiver_7Z =
 {
     CURRENT_PHYSFS_ARCHIVER_API_VERSION,
@@ -398,7 +412,7 @@ const PHYSFS_Archiver __PHYSFS_Archiver_7Z =
         0,  /* supportsSymlinks */
     },
     SZIP_openArchive,
-    __PHYSFS_DirTreeEnumerateFiles,
+    __PHYSFS_DirTreeEnumerate,
     SZIP_openRead,
     SZIP_openWrite,
     SZIP_openAppend,

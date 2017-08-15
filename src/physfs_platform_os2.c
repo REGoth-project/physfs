@@ -63,7 +63,6 @@ static PHYSFS_ErrorCode errcodeFromAPIRET(const APIRET rc)
         case ERROR_NO_MORE_SEARCH_HANDLES: return PHYSFS_ERR_IO;
         case ERROR_SEEK_ON_DEVICE: return PHYSFS_ERR_IO;
         case ERROR_NEGATIVE_SEEK: return PHYSFS_ERR_INVALID_ARGUMENT;
-        /*!!! FIXME: Where did this go?  case ERROR_DEL_CURRENT_DIRECTORY: return ERR_DEL_CWD;*/
         case ERROR_WRITE_PROTECT: return PHYSFS_ERR_PERMISSION;
         case ERROR_WRITE_FAULT: return PHYSFS_ERR_IO;
         case ERROR_UNCERTAIN_MEDIA: return PHYSFS_ERR_IO;
@@ -203,11 +202,11 @@ static char *cvtPathToCorrectCase(char *buf)
             {
                 int cmp;
                 char *utf8 = cvtCodepageToUtf8(fb.achName);
-                if (!utf8) /* ugh, maybe we'll get lucky and it's ASCII */
-                    cmp = __PHYSFS_stricmpASCII(utf8, fname);
+                if (!utf8) /* ugh, maybe we'll get lucky with the C runtime. */
+                    cmp = stricmp(utf8, fname);
                 else
                 {
-                    cmp = __PHYSFS_utf8stricmp(utf8, fname);
+                    cmp = PHYSFS_utf8stricmp(utf8, fname);
                     allocator.Free(utf8);
                 } /* else */
 
@@ -272,7 +271,7 @@ int __PHYSFS_platformInit(void)
 } /* __PHYSFS_platformInit */
 
 
-int __PHYSFS_platformDeinit(void)
+void __PHYSFS_platformDeinit(void)
 {
     if (uconvdll)
     {
@@ -281,8 +280,6 @@ int __PHYSFS_platformDeinit(void)
         DosFreeModule(uconvdll);
         uconvdll = 0;
     } /* if */
-
-    return 1;  /* success. */
 } /* __PHYSFS_platformDeinit */
 
 
@@ -391,12 +388,11 @@ char *__PHYSFS_platformCalcUserDir(void)
 char *__PHYSFS_platformCalcPrefDir(const char *org, const char *app)
 {
     return __PHYSFS_platformCalcBaseDir(NULL);  /* !!! FIXME: ? */
-}
+} /* __PHYSFS_platformCalcPrefDir */
 
-void __PHYSFS_platformEnumerateFiles(const char *dirname,
-                                     PHYSFS_EnumFilesCallback callback,
-                                     const char *origdir,
-                                     void *callbackdata)
+int __PHYSFS_platformEnumerate(const char *dirname,
+                               PHYSFS_EnumerateCallback callback,
+                               const char *origdir, void *callbackdata)
 {                                        
     size_t utf8len = strlen(dirname);
     char *utf8 = (char *) __PHYSFS_smallAlloc(utf8len + 5);
@@ -405,8 +401,9 @@ void __PHYSFS_platformEnumerateFiles(const char *dirname,
     HDIR hdir = HDIR_CREATE;
     ULONG count = 1;
     APIRET rc;
+    int retval = 1;
 
-    BAIL_IF(!utf8, PHYSFS_ERR_OUT_OF_MEMORY,);
+    BAIL_IF(!utf8, PHYSFS_ERR_OUT_OF_MEMORY, -1);
 
     strcpy(utf8, dirname);
     if (utf8[utf8len - 1] != '\\')
@@ -416,8 +413,7 @@ void __PHYSFS_platformEnumerateFiles(const char *dirname,
 
     cpspec = cvtUtf8ToCodepage(utf8);
     __PHYSFS_smallFree(utf8);
-    if (!cpspec)
-        return;
+    BAIL_IF_ERRPASS(!cpspec, -1);
 
     rc = DosFindFirst((unsigned char *) cpspec, &hdir,
                       FILE_DIRECTORY | FILE_ARCHIVED |
@@ -425,24 +421,34 @@ void __PHYSFS_platformEnumerateFiles(const char *dirname,
                       &fb, sizeof (fb), &count, FIL_STANDARD);
     allocator.Free(cpspec);
 
-    BAIL_IF(rc != NO_ERROR, errcodeFromAPIRET(rc),);
+    BAIL_IF(rc != NO_ERROR, errcodeFromAPIRET(rc), -1);
 
     while (count == 1)
     {
         if ((strcmp(fb.achName, ".") != 0) && (strcmp(fb.achName, "..") != 0))
         {
             utf8 = cvtCodepageToUtf8(fb.achName);
-            if (utf8)
+            if (!utf8)
+                retval = -1;
+            else
             {
-                callback(callbackdata, origdir, utf8);
+                retval = callback(callbackdata, origdir, utf8);
                 allocator.Free(utf8);
-            } /* if */
+                if (retval == -1)
+                    PHYSFS_setErrorCode(PHYSFS_ERR_APP_CALLBACK);
+            } /* else */
         } /* if */
+
+        if (retval != 1)
+            break;
+
         DosFindNext(hdir, &fb, sizeof (fb), &count);
     } /* while */
 
     DosFindClose(hdir);
-} /* __PHYSFS_platformEnumerateFiles */
+
+    return retval;
+} /* __PHYSFS_platformEnumerate */
 
 
 char *__PHYSFS_platformCurrentDir(void)

@@ -25,7 +25,8 @@ endif()
 include_directories(./src)
 
 if(APPLE)
-    set(OTHER_LDFLAGS ${OTHER_LDFLAGS} "-framework CoreFoundation -framework IOKit")
+    set(OTHER_LDFLAGS ${OTHER_LDFLAGS} "-framework IOKit -framework Foundation")
+    set(PHYSFS_M_SRCS src/physfs_platform_apple.m)
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCC)
@@ -37,7 +38,6 @@ if(CMAKE_C_COMPILER_ID STREQUAL "SunPro")
     add_definitions(-erroff=E_EMPTY_TRANSLATION_UNIT)
     add_definitions(-xldscope=hidden)
 endif()
-
 
 if(HAIKU)
     # We add this explicitly, since we don't want CMake to think this
@@ -73,7 +73,6 @@ set(PHYSFS_SRCS
     src/physfs_unicode.c
     src/physfs_platform_posix.c
     src/physfs_platform_unix.c
-    src/physfs_platform_macos.c
     src/physfs_platform_windows.c
     src/physfs_platform_os2.c
     src/physfs_archiver_dir.c
@@ -89,6 +88,7 @@ set(PHYSFS_SRCS
     src/physfs_archiver_iso9660.c
     src/physfs_archiver_vdf.c
     ${PHYSFS_CPP_SRCS}
+    ${PHYSFS_M_SRCS}
 )
 
 
@@ -170,6 +170,7 @@ endif()
 option(PHYSFS_BUILD_SHARED "Build shared library" TRUE)
 if(PHYSFS_BUILD_SHARED)
     add_library(physfs SHARED ${PHYSFS_SRCS})
+    set_target_properties(physfs PROPERTIES MACOSX_RPATH 1)
     set_target_properties(physfs PROPERTIES VERSION ${PHYSFS_VERSION})
     set_target_properties(physfs PROPERTIES SOVERSION ${PHYSFS_SOVERSION})
     if(WINRT)

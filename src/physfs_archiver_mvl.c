@@ -53,7 +53,8 @@ static int mvlLoadEntries(PHYSFS_Io *io, const PHYSFS_uint32 count, void *arc)
 } /* mvlLoadEntries */
 
 
-static void *MVL_openArchive(PHYSFS_Io *io, const char *name, int forWriting)
+static void *MVL_openArchive(PHYSFS_Io *io, const char *name,
+                             int forWriting, int *claimed)
 {
     PHYSFS_uint8 buf[4];
     PHYSFS_uint32 count = 0;
@@ -63,8 +64,10 @@ static void *MVL_openArchive(PHYSFS_Io *io, const char *name, int forWriting)
     BAIL_IF(forWriting, PHYSFS_ERR_READ_ONLY, NULL);
     BAIL_IF_ERRPASS(!__PHYSFS_readAll(io, buf, 4), NULL);
     BAIL_IF(memcmp(buf, "DMVL", 4) != 0, PHYSFS_ERR_UNSUPPORTED, NULL);
-    BAIL_IF_ERRPASS(!__PHYSFS_readAll(io, &count, sizeof(count)), NULL);
 
+    *claimed = 1;
+
+    BAIL_IF_ERRPASS(!__PHYSFS_readAll(io, &count, sizeof(count)), NULL);
     count = PHYSFS_swapULE32(count);
 
     unpkarc = UNPK_openArchive(io);
@@ -91,7 +94,7 @@ const PHYSFS_Archiver __PHYSFS_Archiver_MVL =
         0,  /* supportsSymlinks */
     },
     MVL_openArchive,
-    UNPK_enumerateFiles,
+    UNPK_enumerate,
     UNPK_openRead,
     UNPK_openWrite,
     UNPK_openAppend,

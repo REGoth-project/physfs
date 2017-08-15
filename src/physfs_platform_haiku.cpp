@@ -32,9 +32,9 @@ int __PHYSFS_platformInit(void)
 } /* __PHYSFS_platformInit */
 
 
-int __PHYSFS_platformDeinit(void)
+void __PHYSFS_platformDeinit(void)
 {
-    return 1;  /* always succeed. */
+    /* no-op */
 } /* __PHYSFS_platformDeinit */
 
 
@@ -104,9 +104,6 @@ static void tryDir(const char *d, PHYSFS_StringCallback callback, void *data)
                 tryDir(name, callback, data);
             continue;
         } /* if */
-
-        if (strcmp(e.name, "raw") != 0)  /* ignore partitions. */
-            continue;
 
         const int devfd = open(name, O_RDONLY);
         if (devfd < 0)

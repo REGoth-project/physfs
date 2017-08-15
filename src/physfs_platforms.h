@@ -21,24 +21,22 @@
 #  error PocketPC support was dropped since PhysicsFS 2.1. Sorry. Try WinRT!
 #elif (defined(_MSC_VER) && (_MSC_VER >= 1700) && !_USING_V110_SDK71_)	/* _MSC_VER==1700 for MSVC 2012 */
 #  include <winapifamily.h>
-#  if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP)
+#  define PHYSFS_PLATFORM_WINDOWS 1
+#  if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP) && !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
 #    define PHYSFS_NO_CDROM_SUPPORT 1
 #    define PHYSFS_PLATFORM_WINRT 1
-#    define PHYSFS_PLATFORM_WINDOWS 1
-#  else
-#    define PHYSFS_PLATFORM_WINDOWS 1
 #  endif
 #elif (((defined _WIN32) || (defined _WIN64)) && (!defined __CYGWIN__))
 #  define PHYSFS_PLATFORM_WINDOWS 1
 #elif defined(__OS2__) || defined(OS2)
 #  define PHYSFS_PLATFORM_OS2 1
 #elif ((defined __MACH__) && (defined __APPLE__))
-/* To check if iphone or not, we need to include this file */
+/* To check if iOS or not, we need to include this file */
 #  include <TargetConditionals.h>
 #  if ((TARGET_IPHONE_SIMULATOR) || (TARGET_OS_IPHONE))
 #     define PHYSFS_NO_CDROM_SUPPORT 1
 #  endif
-#  define PHYSFS_PLATFORM_MACOS 1
+#  define PHYSFS_PLATFORM_APPLE 1
 #  define PHYSFS_PLATFORM_POSIX 1
 #elif defined(macintosh)
 #  error Classic Mac OS support was dropped from PhysicsFS 2.0. Move to OS X.
