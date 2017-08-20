@@ -17,12 +17,12 @@
 
 #ifdef PHYSFS_PLATFORM_WINRT
 
-#include "physfs_internal.h"
-
-/* !!! FIXME: maybe clean out the "allocator" macro, eventually. */
-#undef allocator  /* apparently Windows 10 SDK conflicts here. */
-
+#if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
+#define _CRT_SECURE_NO_WARNINGS 1
+#endif
 #include <windows.h>
+
+#include "physfs_internal.h"
 
 const void *__PHYSFS_winrtCalcBaseDir(void)
 {

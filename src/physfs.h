@@ -170,14 +170,14 @@
  *  should convert them to UTF-8 before handing them to PhysicsFS with
  *  PHYSFS_utf8FromUtf16(), which handles both UTF-16 and UCS-2. If you're
  *  using Unix or Mac OS X, your wchar_t strings are four bytes per character
- *  ("UCS-4 encoding"). Use PHYSFS_utf8FromUcs4(). Mac OS X can give you UTF-8
- *  directly from a CFString or NSString, and many Unixes generally give you C
- *  strings in UTF-8 format everywhere. If you have a single-byte high ASCII
- *  charset, like so-many European "codepages" you may be out of luck. We'll
- *  convert from "Latin1" to UTF-8 only, and never back to Latin1. If you're
- *  above ASCII 127, all bets are off: move to Unicode or use your platform's
- *  facilities. Passing a C string with high-ASCII data that isn't UTF-8
- *  encoded will NOT do what you expect!
+ *  ("UCS-4 encoding", sometimes called "UTF-32"). Use PHYSFS_utf8FromUcs4().
+ *  Mac OS X can give you UTF-8 directly from a CFString or NSString, and many
+ *  Unixes generally give you C strings in UTF-8 format everywhere. If you
+ *  have a single-byte high ASCII charset, like so-many European "codepages"
+ *  you may be out of luck. We'll convert from "Latin1" to UTF-8 only, and
+ *  never back to Latin1. If you're above ASCII 127, all bets are off: move
+ *  to Unicode or use your platform's facilities. Passing a C string with
+ *  high-ASCII data that isn't UTF-8 encoded will NOT do what you expect!
  *
  * Naturally, there's also PHYSFS_utf8ToUcs2(), PHYSFS_utf8ToUtf16(), and
  *  PHYSFS_utf8ToUcs4() to get data back into a format you like. Behind the
@@ -434,7 +434,7 @@ typedef struct PHYSFS_Version
 #ifndef DOXYGEN_SHOULD_IGNORE_THIS
 #define PHYSFS_VER_MAJOR 2
 #define PHYSFS_VER_MINOR 1
-#define PHYSFS_VER_PATCH 0
+#define PHYSFS_VER_PATCH 1
 #endif  /* DOXYGEN_SHOULD_IGNORE_THIS */
 
 
@@ -2386,7 +2386,11 @@ PHYSFS_DECL void PHYSFS_enumerateFilesCallback(const char *dir,
  * \fn void PHYSFS_utf8FromUcs4(const PHYSFS_uint32 *src, char *dst, PHYSFS_uint64 len)
  * \brief Convert a UCS-4 string to a UTF-8 string.
  *
- * UCS-4 strings are 32-bits per character: \c wchar_t on Unix.
+ * \warning This function will not report an error if there are invalid UCS-4
+ *          values in the source string. It will replace them with a '?'
+ *          character and continue on.
+ *
+ * UCS-4 (aka UTF-32) strings are 32-bits per character: \c wchar_t on Unix.
  *
  * To ensure that the destination buffer is large enough for the conversion,
  *  please allocate a buffer that is the same size as the source buffer. UTF-8
@@ -2408,7 +2412,11 @@ PHYSFS_DECL void PHYSFS_utf8FromUcs4(const PHYSFS_uint32 *src, char *dst,
  * \fn void PHYSFS_utf8ToUcs4(const char *src, PHYSFS_uint32 *dst, PHYSFS_uint64 len)
  * \brief Convert a UTF-8 string to a UCS-4 string.
  *
- * UCS-4 strings are 32-bits per character: \c wchar_t on Unix.
+ * \warning This function will not report an error if there are invalid UTF-8
+ *          sequences in the source string. It will replace them with a '?'
+ *          character and continue on.
+ *
+ * UCS-4 (aka UTF-32) strings are 32-bits per character: \c wchar_t on Unix.
  *
  * To ensure that the destination buffer is large enough for the conversion,
  *  please allocate a buffer that is four times the size of the source buffer.
@@ -2432,6 +2440,10 @@ PHYSFS_DECL void PHYSFS_utf8ToUcs4(const char *src, PHYSFS_uint32 *dst,
  *
  * \warning you almost certainly should use PHYSFS_utf8FromUtf16(), which
  *  became available in PhysicsFS 2.1, unless you know what you're doing.
+ *
+ * \warning This function will not report an error if there are invalid UCS-2
+ *          values in the source string. It will replace them with a '?'
+ *          character and continue on.
  *
  * UCS-2 strings are 16-bits per character: \c TCHAR on Windows, when building
  *  with Unicode support. Please note that modern versions of Windows use
@@ -2462,6 +2474,10 @@ PHYSFS_DECL void PHYSFS_utf8FromUcs2(const PHYSFS_uint16 *src, char *dst,
  *
  * \warning you almost certainly should use PHYSFS_utf8ToUtf16(), which
  *  became available in PhysicsFS 2.1, unless you know what you're doing.
+ *
+ * \warning This function will not report an error if there are invalid UTF-8
+ *          sequences in the source string. It will replace them with a '?'
+ *          character and continue on.
  *
  * UCS-2 strings are 16-bits per character: \c TCHAR on Windows, when building
  *  with Unicode support. Please note that modern versions of Windows use
@@ -2516,12 +2532,46 @@ PHYSFS_DECL void PHYSFS_utf8FromLatin1(const char *src, char *dst,
 /* Everything above this line is part of the PhysicsFS 2.0 API. */
 
 /**
+ * \fn int PHYSFS_caseFold(const PHYSFS_uint32 from, PHYSFS_uint32 *to)
+ * \brief "Fold" a Unicode codepoint to a lowercase equivalent.
+ *
+ * (This is for limited, hardcore use. If you don't immediately see a need
+ *  for it, you can probably ignore this forever.)
+ *
+ * This will convert a Unicode codepoint into its lowercase equivalent.
+ *  Bogus codepoints and codepoints without a lowercase equivalent will
+ *  be returned unconverted.
+ *
+ * Note that you might get multiple codepoints in return! The German Eszett,
+ *  for example, will fold down to two lowercase latin 's' codepoints. The
+ *  theory is that if you fold two strings, one with an Eszett and one with
+ *  "SS" down, they will match.
+ *
+ * \warning Anyone that is a student of Unicode knows about the "Turkish I"
+ *          problem. This API does not handle it. Assume this one letter
+ *          in all of Unicode will definitely fold sort of incorrectly. If
+ *          you don't know what this is about, you can probably ignore this
+ *          problem for most of the planet, but perfection is impossible.
+ *
+ *   \param from The codepoint to fold.
+ *   \param to Buffer to store the folded codepoint values into. This should
+ *             point to space for at least 3 PHYSFS_uint32 slots.
+ *  \return The number of codepoints the folding produced. Between 1 and 3.
+ */
+PHYSFS_DECL int PHYSFS_caseFold(const PHYSFS_uint32 from, PHYSFS_uint32 *to);
+
+
+/**
  * \fn int PHYSFS_utf8stricmp(const char *str1, const char *str2)
  * \brief Case-insensitive compare of two UTF-8 strings.
  *
  * This is a strcasecmp/stricmp replacement that expects both strings
  *  to be in UTF-8 encoding. It will do "case folding" to decide if the
  *  Unicode codepoints in the strings match.
+ *
+ * If both strings are exclusively low-ASCII characters, this will do the
+ *  right thing, as that is also valid UTF-8. If there are any high-ASCII
+ *  chars, this will not do what you expect!
  *
  * It will report which string is "greater than" the other, but be aware that
  *  this doesn't necessarily mean anything: 'a' may be "less than" 'b', but
@@ -2537,6 +2587,72 @@ PHYSFS_DECL void PHYSFS_utf8FromLatin1(const char *src, char *dst,
  *  \return -1 if str1 is "less than" str2, 1 if "greater than", 0 if equal.
  */
 PHYSFS_DECL int PHYSFS_utf8stricmp(const char *str1, const char *str2);
+
+/**
+ * \fn int PHYSFS_utf16stricmp(const PHYSFS_uint16 *str1, const PHYSFS_uint16 *str2)
+ * \brief Case-insensitive compare of two UTF-16 strings.
+ *
+ * This is a strcasecmp/stricmp replacement that expects both strings
+ *  to be in UTF-16 encoding. It will do "case folding" to decide if the
+ *  Unicode codepoints in the strings match.
+ *
+ * It will report which string is "greater than" the other, but be aware that
+ *  this doesn't necessarily mean anything: 'a' may be "less than" 'b', but
+ *  a Japanese kuten has no meaningful alphabetically relationship to
+ *  a Greek lambda, but being able to assign a reliable "value" makes sorting
+ *  algorithms possible, if not entirely sane. Most cases should treat the
+ *  return value as "equal" or "not equal".
+ *
+ * Like stricmp, this expects both strings to be NULL-terminated.
+ *
+ *   \param str1 First string to compare.
+ *   \param str2 Second string to compare.
+ *  \return -1 if str1 is "less than" str2, 1 if "greater than", 0 if equal.
+ */
+PHYSFS_DECL int PHYSFS_utf16stricmp(const PHYSFS_uint16 *str1,
+                                    const PHYSFS_uint16 *str2);
+
+/**
+ * \fn int PHYSFS_ucs4stricmp(const PHYSFS_uint32 *str1, const PHYSFS_uint32 *str2)
+ * \brief Case-insensitive compare of two UCS-4 strings.
+ *
+ * This is a strcasecmp/stricmp replacement that expects both strings
+ *  to be in UCS-4 (aka UTF-32) encoding. It will do "case folding" to decide
+ *  if the Unicode codepoints in the strings match.
+ *
+ * It will report which string is "greater than" the other, but be aware that
+ *  this doesn't necessarily mean anything: 'a' may be "less than" 'b', but
+ *  a Japanese kuten has no meaningful alphabetically relationship to
+ *  a Greek lambda, but being able to assign a reliable "value" makes sorting
+ *  algorithms possible, if not entirely sane. Most cases should treat the
+ *  return value as "equal" or "not equal".
+ *
+ * Like stricmp, this expects both strings to be NULL-terminated.
+ *
+ *   \param str1 First string to compare.
+ *   \param str2 Second string to compare.
+ *  \return -1 if str1 is "less than" str2, 1 if "greater than", 0 if equal.
+ */
+PHYSFS_DECL int PHYSFS_ucs4stricmp(const PHYSFS_uint32 *str1,
+                                   const PHYSFS_uint32 *str2);
+
+
+/**
+ * \typedef PHYSFS_EnumerateCallback
+ * \brief Possible return values from PHYSFS_EnumerateCallback.
+ *
+ * These values dictate if an enumeration callback should continue to fire,
+ *  or stop (and why it is stopping).
+ *
+ * \sa PHYSFS_EnumerateCallback
+ * \sa PHYSFS_enumerate
+ */
+typedef enum PHYSFS_EnumerateCallbackResult
+{
+    PHYSFS_ENUM_ERROR = -1,   /**< Stop enumerating, report error to app. */
+    PHYSFS_ENUM_STOP = 0,     /**< Stop enumerating, report success to app. */
+    PHYSFS_ENUM_OK = 1        /**< Keep enumerating, no problems */
+} PHYSFS_EnumerateCallbackResult;
 
 /**
  * \typedef PHYSFS_EnumerateCallback
@@ -2559,13 +2675,14 @@ PHYSFS_DECL int PHYSFS_utf8stricmp(const char *str1, const char *str2);
  *                 fired, and it will not contain the full path. You can
  *                 recreate the fullpath with $origdir/$fname ... The file
  *                 can be a subdirectory, a file, a symlink, etc.
- *   \return 1 to keep enumerating, 0 to stop (no error), -1 to stop (error).
+ *   \return A value from PHYSFS_EnumerateCallbackResult.
  *           All other values are (currently) undefined; don't use them.
  *
  * \sa PHYSFS_enumerate
+ * \sa PHYSFS_EnumerateCallbackResult
  */
-typedef int (*PHYSFS_EnumerateCallback)(void *data, const char *origdir,
-                                         const char *fname);
+typedef PHYSFS_EnumerateCallbackResult (*PHYSFS_EnumerateCallback)(void *data,
+                                       const char *origdir, const char *fname);
 
 /**
  * \fn int PHYSFS_enumerate(const char *dir, PHYSFS_EnumerateCallback c, void *d)
@@ -2618,8 +2735,9 @@ typedef int (*PHYSFS_EnumerateCallback)(void *data, const char *origdir,
  *    \param d Application-defined data passed to callback. Can be NULL.
  *   \return non-zero on success, zero on failure. Use
  *           PHYSFS_getLastErrorCode() to obtain the specific error. If the
- *           callback returns zero to stop early, this will be considered
- *           success. Callbacks returning -1 will result in
+ *           callback returns PHYSFS_ENUM_STOP to stop early, this will be
+ *           considered success. Callbacks returning PHYSFS_ENUM_ERROR will
+ *           make this function return zero and set the error code to
  *           PHYSFS_ERR_APP_CALLBACK.
  *
  * \sa PHYSFS_EnumerateCallback
@@ -2757,6 +2875,10 @@ PHYSFS_DECL int PHYSFS_stat(const char *fname, PHYSFS_Stat *stat);
  * \fn void PHYSFS_utf8FromUtf16(const PHYSFS_uint16 *src, char *dst, PHYSFS_uint64 len)
  * \brief Convert a UTF-16 string to a UTF-8 string.
  *
+ * \warning This function will not report an error if there are invalid UTF-16
+ *          sequences in the source string. It will replace them with a '?'
+ *          character and continue on.
+ *
  * UTF-16 strings are 16-bits per character (except some chars, which are
  *  32-bits): \c TCHAR on Windows, when building with Unicode support. Modern
  *  Windows releases use UTF-16. Windows releases before 2000 used TCHAR, but
@@ -2783,6 +2905,10 @@ PHYSFS_DECL void PHYSFS_utf8FromUtf16(const PHYSFS_uint16 *src, char *dst,
 /**
  * \fn PHYSFS_utf8ToUtf16(const char *src, PHYSFS_uint16 *dst, PHYSFS_uint64 len)
  * \brief Convert a UTF-8 string to a UTF-16 string.
+ *
+ * \warning This function will not report an error if there are invalid UTF-8
+ *          sequences in the source string. It will replace them with a '?'
+ *          character and continue on.
  *
  * UTF-16 strings are 16-bits per character (except some chars, which are
  *  32-bits): \c TCHAR on Windows, when building with Unicode support. Modern
@@ -3524,23 +3650,26 @@ typedef struct PHYSFS_Archiver
      *  you can dispose of it upon return from the callback. (dirname) is in
      *  platform-independent notation.
      * If you have a failure, call PHYSFS_SetErrorCode() with whatever code
-     *  seem appropriate and return -1.
-     * If the callback returns -1, please call
-     *  PHYSFS_SetErrorCode(PHYSFS_ERR_APP_CALLBACK) and then return -1.
-     * If the callback returns 0, stop enumerating and return 0. Don't call
-     *  the callback again in any circumstances. Don't set an error code in
-     *  this case.
-     * Callbacks are (currently) only supposed to return -1, 0, or 1. Any
-     *  other result has undefined behavior.
-     * As long as the callback returned 1 and you haven't experienced any
-     *  errors of your own, keep enumerating until you're done and then return
-     *  1 without setting an error code.
+     *  seem appropriate and return PHYSFS_ENUM_ERROR.
+     * If the callback returns PHYSFS_ENUM_ERROR, please call
+     *  PHYSFS_SetErrorCode(PHYSFS_ERR_APP_CALLBACK) and then return
+     *  PHYSFS_ENUM_ERROR as well. Don't call the callback again in any
+     *  circumstances.
+     * If the callback returns PHYSFS_ENUM_STOP, stop enumerating and return
+     *  PHYSFS_ENUM_STOP as well. Don't call the callback again in any
+     *  circumstances. Don't set an error code in this case.
+     * Callbacks are only supposed to return a value from
+     *  PHYSFS_EnumerateCallbackResult. Any other result has undefined
+     *  behavior.
+     * As long as the callback returned PHYSFS_ENUM_OK and you haven't
+     *  experienced any errors of your own, keep enumerating until you're done
+     *  and then return PHYSFS_ENUM_OK without setting an error code.
      *
      * \warning PHYSFS_enumerate returns zero or non-zero (success or failure),
      *          so be aware this function pointer returns different values!
      */
-    int (*enumerate)(void *opaque, const char *dirname,
-                     PHYSFS_EnumerateCallback cb,
+    PHYSFS_EnumerateCallbackResult (*enumerate)(void *opaque,
+                     const char *dirname, PHYSFS_EnumerateCallback cb,
                      const char *origdir, void *callbackdata);
 
     /**
