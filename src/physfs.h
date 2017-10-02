@@ -149,7 +149,7 @@
  *   - .MVL (Descent II movielib archives)
  *   - .WAD (DOOM engine archives)
  *   - .VDF (Gothic I/II engine archives)
- *
+ *   - .SLB (Independence War archives)
  *
  * String policy for PhysicsFS 2.0 and later:
  *
@@ -432,9 +432,9 @@ typedef struct PHYSFS_Version
 
 
 #ifndef DOXYGEN_SHOULD_IGNORE_THIS
-#define PHYSFS_VER_MAJOR 2
-#define PHYSFS_VER_MINOR 1
-#define PHYSFS_VER_PATCH 1
+#define PHYSFS_VER_MAJOR 3
+#define PHYSFS_VER_MINOR 0
+#define PHYSFS_VER_PATCH 0
 #endif  /* DOXYGEN_SHOULD_IGNORE_THIS */
 
 
@@ -3229,7 +3229,7 @@ PHYSFS_DECL int PHYSFS_mountIo(PHYSFS_Io *io, const char *fname,
 
 
 /**
- * \fn int PHYSFS_mountMemory(const void *ptr, PHYSFS_uint64 len, void (*del)(void *), const char *fname, const char *mountPoint, int appendToPath)
+ * \fn int PHYSFS_mountMemory(const void *buf, PHYSFS_uint64 len, void (*del)(void *), const char *fname, const char *mountPoint, int appendToPath)
  * \brief Add an archive, contained in a memory buffer, to the search path.
  *
  * \warning Unless you have some special, low-level need, you should be using
